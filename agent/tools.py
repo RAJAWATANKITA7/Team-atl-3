@@ -102,11 +102,11 @@ def query_cascade_exposure(
       o.buyer_id,
       b.name AS buyer_name,
       b.naics4 AS buyer_industry,
-      o.seed_intensity,
+      ROUND(o.seed_intensity, 4) AS seed_intensity,
       o.metres,
-      t.total_input_intensity,
+      ROUND(t.total_input_intensity, 4) AS total_input_intensity,
       t.supplier_count,
-      SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity) AS customer_reliance_share
+      ROUND(SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity), 4) AS customer_reliance_share
     FROM seed_outbound o
     JOIN buyer_totals t ON o.buyer_id = t.buyer_id
     JOIN `{p_id}.{DATASET}.businesses` b ON o.buyer_id = b.business_id
@@ -123,6 +123,14 @@ def query_cascade_exposure(
         bwd_rows = [dict(r) for r in client.query(backward_gql, job_config=job_config).result()]
         # Run reliance calculation
         reliance_rows = [dict(r) for r in client.query(reliance_query, job_config=job_config).result()]
+        for r in reliance_rows:
+            if r.get("customer_reliance_share") is not None:
+                r["customer_reliance_share"] = round(float(r["customer_reliance_share"]), 4)
+            if r.get("seed_intensity") is not None:
+                r["seed_intensity"] = round(float(r["seed_intensity"]), 4)
+            if r.get("total_input_intensity") is not None:
+                r["total_input_intensity"] = round(float(r["total_input_intensity"]), 4)
+
 
         seed_name = fwd_rows[0]["seed_name"] if fwd_rows else "Unknown"
         seed_naics4 = fwd_rows[0]["seed_industry"] if fwd_rows else ""
