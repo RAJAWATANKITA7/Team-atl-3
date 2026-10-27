@@ -210,66 +210,157 @@ def find_business_by_name(name: str, project_id: Optional[str] = None) -> Dict[s
         return {"error": str(e), "status": "failed"}
 
 
+HUB_TIER_HIGH = 3.0    # total strong-link strength for HIGH priority (starting assumption)
+HUB_TIER_MEDIUM = 1.0  # total strong-link strength for MEDIUM priority (starting assumption)
+
+
+def _link_profile(business_id: str, project_id: Optional[str] = None) -> Dict[str, Any]:
+    """Counts ALL outgoing supply links (any strength) and the strongest one."""
+    p_id = project_id or PROJECT_ID
+    client = bigquery.Client(project=p_id)
+    sql = f"""
+    SELECT COUNT(*) AS links, MAX(intensity) AS strongest_link
+    FROM `{p_id}.{DATASET}.supplies`
+    WHERE supplier_id = @id
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("id", "STRING", business_id)]
+    )
+    row = list(client.query(sql, job_config=cfg).result())[0]
+    return {"links": int(row["links"] or 0), "strongest_link": float(row["strongest_link"] or 0.0)}
+
+
+def _peers_in_naics(naics4: str, project_id: Optional[str] = None) -> int:
+    """How many corridor businesses share this 4-digit industry (1 = sole source)."""
+    p_id = project_id or PROJECT_ID
+    client = bigquery.Client(project=p_id)
+    sql = f"""
+    SELECT COUNT(*) AS n
+    FROM `{p_id}.{DATASET}.businesses`
+    WHERE naics4 = @naics4
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("naics4", "STRING", naics4)]
+    )
+    return int(list(client.query(sql, job_config=cfg).result())[0]["n"] or 0)
+
+
 def evaluate_grant_recommendation(
     seed_business_id: str,
-    total_downstream_exposed_count: int,
+    total_downstream_exposed_count: int = 0,
     direct_customers_count: int = 0,
     cascade_multiplier_score: float = 0.0,
     upstream_suppliers_count: int = 0,
     total_fund_budget: float = 50000.0,
     requested_amount: float = 10000.0,
     corridor_peers_in_naics: int = 1,
+    min_intensity: float = 0.05,
 ) -> Dict[str, Any]:
-    """Evaluates an individual micro-producer grant based on network topology and path intensity.
+    """Evaluates a supplier grant from LINK STRENGTH, recomputed from the graph.
 
-    NON-CIRCULARITY & RUBRIC RULES:
-    1. Guard against circularity: SBA charge-off history is NOT an input to this score.
-    2. Sweet spot (5-25 exposed): High protection leverage with localized ripple effect.
-    3. Hub trap (>25 exposed): Ubiquitous broadline vendors are penalized/capped due to substitutability.
-    4. Generator artifact: Sole-source registrants (corridor_peers == 1) receive explicit caveats.
-    5. Upstream single-point-of-failure: Flagged if the seed has only 1 local supplier.
+    Only seed_business_id is needed. The other evidence arguments are kept for
+    compatibility and are IGNORED: the numbers are recomputed here from the graph
+    so the memo can cite them.
+
+    Rules (topology only; SBA charge-offs are never an input, to avoid circularity):
+    1. Rank by total strength of STRONG supply links (intensity >= min_intensity),
+       not by how many businesses a supplier touches.
+    2. Weak-link hub: touches many businesses but has no strong link. Not funded.
+       Reach is not dependence.
+    3. Tiers by total strong-link strength: HIGH >= 3.0, MEDIUM >= 1.0, else LOW.
+       The thresholds are starting assumptions; show how the answer moves if they change.
+    4. Sole-source suppliers (only business in their industry here) get an explicit
+       upper-bound caveat: buyers could source outside the corridor.
     """
-    is_hub = total_downstream_exposed_count > 25
-    is_sole_source = (corridor_peers_in_naics == 1)
+    cascade = query_cascade_exposure(seed_business_id, min_intensity=min_intensity)
+    if cascade.get("status") != "success":
+        return {
+            "business_id": seed_business_id,
+            "status": "failed",
+            "priority": "UNKNOWN",
+            "recommended_amount": 0.0,
+            "error": cascade.get("error", "cascade query failed"),
+        }
+    try:
+        profile = _link_profile(seed_business_id)
+        peers = _peers_in_naics(cascade.get("seed_naics4") or "")
+    except Exception as e:
+        return {
+            "business_id": seed_business_id,
+            "status": "failed",
+            "priority": "UNKNOWN",
+            "recommended_amount": 0.0,
+            "error": str(e),
+        }
 
-    if total_downstream_exposed_count == 0:
-        recommended_amount = 0.0
-        priority = "LOW"
-        rationale = "Zero downstream businesses identified in supply chain cascade. Minimal systemic multiplier."
-    elif is_hub:
-        recommended_amount = min(requested_amount, 5000.0)
-        priority = "MEDIUM"
+    strong_buyers = int(cascade["strong_direct_buyers_count"])
+    reach = int(cascade["total_downstream_exposed_count"])
+    strength = float(cascade["total_strong_intensity"])
+    score = float(cascade["cascade_multiplier_score"])
+    upstream = int(cascade.get("upstream_suppliers_count") or 0)
+    is_sole_source = peers == 1
+    is_weak_hub = strong_buyers == 0 and profile["links"] >= 10
+
+    if strong_buyers == 0 and is_weak_hub:
+        recommended_amount, priority = 0.0, "LOW"
         rationale = (
-            f"Candidate reaches {total_downstream_exposed_count} businesses (>25 hub threshold). "
-            "Ubiquitous supplier is likely substitutable across the broader city. "
-            "Capped to $5,000 to preserve fund liquidity for specialized micro-producers."
+            f"Weak-link hub: touches {profile['links']} businesses, but its strongest link is "
+            f"{profile['strongest_link']:.3f}, below the {min_intensity} cutoff, so it has no strong "
+            "dependents. Reach is not dependence. Not recommended."
         )
-    elif 5 <= total_downstream_exposed_count <= 25:
-        recommended_amount = min(requested_amount, total_fund_budget * 0.25)
-        priority = "HIGH"
-        spof_note = " CAUTION: applicant has single upstream supplier." if upstream_suppliers_count == 1 else ""
-        sole_note = " (Note: Sole registrant in corridor NAICS - reach is upper bound)." if is_sole_source else ""
+    elif strong_buyers == 0:
+        recommended_amount, priority = 0.0, "LOW"
+        rationale = f"No strong downstream dependents at the {min_intensity} cutoff. Not recommended."
+    elif strength >= HUB_TIER_HIGH:
+        recommended_amount, priority = min(requested_amount, total_fund_budget * 0.25), "HIGH"
         rationale = (
-            f"Prime resilience target: protects {total_downstream_exposed_count} downstream venues "
-            f"({direct_customers_count} direct buyers) with cascade intensity score {cascade_multiplier_score:.1f}. "
-            f"Closure creates localized, non-substitutable disruption{spof_note}{sole_note}"
+            f"Protects {strong_buyers} strong direct buyers (total link strength {strength:.2f}); "
+            f"{reach} businesses reached within 2 hops over links >= {min_intensity}."
+        )
+    elif strength >= HUB_TIER_MEDIUM:
+        recommended_amount, priority = min(requested_amount, 5000.0), "MEDIUM"
+        rationale = (
+            f"Protects {strong_buyers} strong direct buyers (total link strength {strength:.2f}); "
+            f"{reach} businesses reached within 2 hops over links >= {min_intensity}."
         )
     else:
-        recommended_amount = min(requested_amount, 3500.0)
-        priority = "LOW"
+        recommended_amount, priority = min(requested_amount, 3500.0), "LOW"
         rationale = (
-            f"Isolated producer: only {total_downstream_exposed_count} downstream businesses protected. "
+            f"Only {strong_buyers} strong direct buyers (total link strength {strength:.2f}). "
             "Low systemic multiplier on grant capital."
         )
 
+    caveats = [
+        "Link strengths are industry averages from federal data; which business buys from "
+        "which is modeled, not measured.",
+        "Some buyers may be duplicate registrations of the same business.",
+        "A grant changes a probability of survival, not an outcome. Tier thresholds "
+        f"({HUB_TIER_HIGH}/{HUB_TIER_MEDIUM}) and amounts are starting assumptions.",
+    ]
+    if is_sole_source:
+        caveats.append(
+            "Only business in its industry in the corridor: it collects every edge for that "
+            "input, and buyers could source outside the corridor, so reach is an upper bound."
+        )
+    if upstream == 1:
+        caveats.append("CAUTION: this business has a single upstream supplier.")
+
     return {
         "business_id": seed_business_id,
+        "business_name": cascade.get("seed_name"),
         "priority": priority,
         "recommended_amount": recommended_amount,
-        "cascade_multiplier_score": cascade_multiplier_score,
-        "is_hub_penalized": is_hub,
+        "cascade_multiplier_score": score,
+        "is_hub_penalized": is_weak_hub,
         "is_sole_source_artifact": is_sole_source,
+        "strong_direct_buyers": strong_buyers,
+        "total_strong_intensity": strength,
+        "reach_within_2_hops": reach,
+        "total_links_any_strength": profile["links"],
+        "strongest_link": profile["strongest_link"],
+        "min_intensity": min_intensity,
         "rationale": rationale,
+        "caveats": caveats,
         "status": "success",
     }
 
