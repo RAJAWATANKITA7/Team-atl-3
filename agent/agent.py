@@ -13,7 +13,12 @@ from __future__ import annotations
 import os
 from google.adk.agents import Agent
 
-from .tools import query_cascade_exposure, evaluate_grant_recommendation
+from .tools import (
+    evaluate_grant_recommendation,
+    query_cascade_exposure,
+    read_dataset_table,
+    write_grant_decision,
+)
 
 # MCP Toolbox server URL if configured (e.g., Cloud Run or local container)
 MCP_TOOLBOX_URL = os.environ.get("MCP_TOOLBOX_URL")
@@ -21,6 +26,8 @@ MCP_TOOLBOX_URL = os.environ.get("MCP_TOOLBOX_URL")
 tools = [
     query_cascade_exposure,
     evaluate_grant_recommendation,
+    read_dataset_table,
+    write_grant_decision,
 ]
 
 # If an MCP Toolbox is running, connect ToolboxToolset

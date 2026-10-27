@@ -9,7 +9,10 @@ import os
 from typing import Any, Dict, List, Optional
 from google.cloud import bigquery
 
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", os.environ.get("PROJECT_ID", ""))
+PROJECT_ID = os.environ.get(
+    "GOOGLE_CLOUD_PROJECT",
+    os.environ.get("PROJECT_ID", "qwiklabs-gcp-03-14e29f4c8c1f"),
+)
 DATASET = os.environ.get("BIGQUERY_DATASET", "a4i_econ")
 GRAPH_NAME = f"{DATASET}.LocalEconomy"
 
@@ -136,3 +139,122 @@ def evaluate_grant_recommendation(
         "downstream_protected_count": exposed_count,
         "rationale": rationale,
     }
+
+
+def read_dataset_table(
+    table_name: str,
+    limit: int = 50,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Reads rows from a table in the qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ dataset.
+
+    Args:
+        table_name: The table name (e.g., 'businesses', 'employer_blocks',
+                    'supplies', 'draws_footfall_from', 'borrowed_from', 'tract_demographics').
+        limit: Number of rows to return (default 50).
+        project_id: Optional GCP project ID override.
+
+    Returns:
+        A dict containing table metadata, fetched rows, and status.
+    """
+    client = bigquery.Client(project=project_id or PROJECT_ID)
+    full_table = f"{project_id or PROJECT_ID}.{DATASET}.{table_name}"
+    query = f"SELECT * FROM `{full_table}` LIMIT @limit"
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("limit", "INT64", limit)]
+    )
+
+    try:
+        query_job = client.query(query, job_config=job_config)
+        rows = [dict(row) for row in query_job.result()]
+        return {
+            "table": full_table,
+            "row_count": len(rows),
+            "rows": rows,
+            "status": "success",
+        }
+    except Exception as e:
+        return {
+            "table": full_table,
+            "error": str(e),
+            "status": "failed",
+        }
+
+
+def write_grant_decision(
+    decision_id: str,
+    business_id: str,
+    recommended_amount: float,
+    priority: str,
+    rationale: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Records an agent grant decision into the grant_decisions table in qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ.
+
+    Ensures the table exists (creates if not present) and appends the recommendation record.
+
+    Args:
+        decision_id: Unique identifier for this decision.
+        business_id: The ID of the business receiving the recommendation.
+        recommended_amount: The dollar amount recommended.
+        priority: Priority level ('HIGH', 'MODERATE', 'MEDIUM', 'LOW').
+        rationale: Justification memo explaining the decision based on network cascade impact.
+        project_id: Optional GCP project ID override.
+
+    Returns:
+        Status dict indicating success or error.
+    """
+    client = bigquery.Client(project=project_id or PROJECT_ID)
+    target_table = f"{project_id or PROJECT_ID}.{DATASET}.grant_decisions"
+
+    # Ensure table exists
+    ddl = f"""
+    CREATE TABLE IF NOT EXISTS `{target_table}` (
+      decision_id STRING,
+      business_id STRING,
+      recommended_amount FLOAT64,
+      priority STRING,
+      rationale STRING,
+      decided_at TIMESTAMP
+    )
+    """
+    try:
+        client.query(ddl).result()
+    except Exception as e:
+        return {
+            "table": target_table,
+            "error": f"Failed ensuring table exists: {e}",
+            "status": "failed",
+        }
+
+    insert_query = f"""
+    INSERT INTO `{target_table}`
+      (decision_id, business_id, recommended_amount, priority, rationale, decided_at)
+    VALUES
+      (@decision_id, @business_id, @recommended_amount, @priority, @rationale, CURRENT_TIMESTAMP())
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("decision_id", "STRING", decision_id),
+            bigquery.ScalarQueryParameter("business_id", "STRING", business_id),
+            bigquery.ScalarQueryParameter("recommended_amount", "FLOAT64", recommended_amount),
+            bigquery.ScalarQueryParameter("priority", "STRING", priority),
+            bigquery.ScalarQueryParameter("rationale", "STRING", rationale),
+        ]
+    )
+
+    try:
+        client.query(insert_query, job_config=job_config).result()
+        return {
+            "table": target_table,
+            "decision_id": decision_id,
+            "business_id": business_id,
+            "status": "success",
+            "message": "Decision logged successfully to BigQuery.",
+        }
+    except Exception as e:
+        return {
+            "table": target_table,
+            "error": str(e),
+            "status": "failed",
+        }
