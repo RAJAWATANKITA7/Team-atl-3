@@ -1,0 +1,39 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: qwiklabs-gcp-03-14e29f4c8c1f
+  REGION: us-central1
+  SERVICE_NAME: supplier-advisor
+  SA_EMAIL: supplier-advisor-sa@qwiklabs-gcp-03-14e29f4c8c1f.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --source . \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --allow-unauthenticated \
+            --memory 2Gi \
+            --timeout 300 \
+            --service-account "$SA_EMAIL" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_LOCATION=$REGION,BIGQUERY_DATASET=a4i_econ"

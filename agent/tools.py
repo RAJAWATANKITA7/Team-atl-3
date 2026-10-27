@@ -386,6 +386,10 @@ def allocate_portfolio_grants(
     runner_ups = []
 
     for cand in sorted_candidates:
+        if cand.get("is_enterprise_disqualified") or cand.get("priority") == "INELIGIBLE":
+            runner_ups.append({**cand, "status": "INELIGIBLE", "reason": "Disqualified under micro-business guardrail (large enterprise / corporate entity)."})
+            continue
+
         rec_amt = float(cand.get("recommended_amount", 0.0))
         if rec_amt <= 0.0:
             runner_ups.append({**cand, "status": "DECLINED", "reason": "Zero or negligible cascade multiplier."})
@@ -728,14 +732,27 @@ def discover_priority_candidates(
         """
         counts = {r["naics4"]: r["count_in_corridor"] for r in client.query(sole_source_query).result()}
 
+        ENTERPRISE_KEYWORDS = [
+            "waymo", "arista", "alphabet", "google", "meta", "apple", "salesforce",
+            "wework", "wpengine", "convergeone", "target", "walgreens", "safeway",
+            "starbucks", "ikea", "bank", "hound technology", "honeycomb", "replica ai",
+            "moesif", "exabyte", "dcmn", "constructor.io", "propark", "impark", "ace parking",
+            "parking management", "tower valet",
+        ]
+
         enriched = []
         for r in rows:
+            bname = str(r.get("business", ""))
+            # Micro-business guardrail: exclude tech giants, national corporate chains, and enterprise parking operators
+            if any(k in bname.lower() for k in ENTERPRISE_KEYWORDS):
+                continue
+
             ind = r.get("industry")
             n_in_corridor = counts.get(ind, 1)
             is_sole_source = (n_in_corridor == 1)
             enriched.append({
                 "business_id": r["business_id"],
-                "business_name": r["business"],
+                "business_name": bname,
                 "industry": ind,
                 "exposed_2hop": r["exposed_2hop"],
                 "is_sole_source_in_corridor": is_sole_source,
