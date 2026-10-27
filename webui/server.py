@@ -10,12 +10,16 @@ Set AGENTS_DIR=webui/dev_agents to try the UI with a scripted demo agent (no Big
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from google.adk.cli.fast_api import get_fast_api_app
 
 HERE = Path(__file__).resolve().parent
+# Load .env from repo root if it exists
+load_dotenv(HERE.parent / ".env")
+
 AGENTS_DIR = os.environ.get("AGENTS_DIR", str(HERE.parent))
 # Same-origin by default (UI and API share one URL), so no CORS is needed.
 # Set ALLOW_ORIGINS="https://a.example,https://b.example" only if the UI is hosted elsewhere.
