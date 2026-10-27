@@ -5,6 +5,9 @@ __pycache__/
 venv/
 env/
 *.egg-info/
+.adk/
+*.db
+
 
 # Notebooks
 .ipynb_checkpoints/
