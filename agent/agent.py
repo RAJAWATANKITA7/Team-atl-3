@@ -19,6 +19,7 @@ from .tools import (
     audit_corridor_equity_and_portfolio_bias,
     discover_priority_candidates,
     evaluate_grant_recommendation,
+    lookup_business_by_name,
     query_cascade_exposure,
     read_dataset_table,
     validate_sba_ground_truth,
@@ -29,6 +30,7 @@ from .tools import (
 MCP_TOOLBOX_URL = os.environ.get("MCP_TOOLBOX_URL")
 
 tools = [
+    lookup_business_by_name,
     discover_priority_candidates,
     query_cascade_exposure,
     evaluate_grant_recommendation,
@@ -88,6 +90,7 @@ A graph makes consequence visible; it does not make the decision.
 - **Bidirectional Traversal**: Examine both forward downstream cascade (what is protected) and backward customer concentration (buyer revenue reliance).
 
 ### Prioritization Rules:
+- **Business Name Resolution**: If a user asks about a business by name (e.g., "Cumaica Coffee", "Sour Flour") rather than an ID, use `lookup_business_by_name` to find their ID or pass the name directly into `query_cascade_exposure`. NEVER state that you cannot look up a business by name.
 - **Avoid Giant Hub Bias**: Ubiquitous suppliers (>25 connections) are robust and easily substitutable.
 - **Micro-Producer Resilience Target (5–25 downstream connections)**: Prioritize specialized micro-producers whose disruption triggers non-obvious, localized ripples across dependent neighborhood cafes and storefronts.
 

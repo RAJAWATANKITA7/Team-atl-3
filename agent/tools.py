@@ -55,6 +55,31 @@ def query_cascade_exposure(
     client = bigquery.Client(project=project_id or PROJECT_ID)
     p_id = project_id or PROJECT_ID
 
+    # Auto-resolve seed_id if the user or agent passed a name instead of an ID
+    resolved_id = business_id
+    id_check_sql = f"SELECT business_id, name FROM `{p_id}.{DATASET}.businesses` WHERE business_id = @b_id LIMIT 1"
+    check_cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("b_id", "STRING", business_id)])
+    try:
+        if not list(client.query(id_check_sql, job_config=check_cfg).result()):
+            # Not an exact ID; attempt name lookup
+            name_match_sql = f"""
+            SELECT business_id, name
+            FROM `{p_id}.{DATASET}.businesses`
+            WHERE LOWER(name) LIKE CONCAT('%', LOWER(@name), '%')
+            ORDER BY
+              CASE WHEN LOWER(name) = LOWER(@name) THEN 1
+                   WHEN STARTS_WITH(LOWER(name), LOWER(@name)) THEN 2
+                   ELSE 3 END,
+              name ASC
+            LIMIT 1
+            """
+            name_cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("name", "STRING", business_id)])
+            m = list(client.query(name_match_sql, job_config=name_cfg).result())
+            if m:
+                resolved_id = m[0]["business_id"]
+    except Exception:
+        pass
+
     # 1. Forward Traversal: seed supplies customers
     forward_gql = f"""
     GRAPH {GRAPH_NAME}
@@ -103,7 +128,7 @@ def query_cascade_exposure(
       b.name AS buyer_name,
       b.naics4 AS buyer_industry,
       ROUND(o.seed_intensity, 4) AS seed_intensity,
-      o.metres,
+      ROUND(o.metres) AS metres,
       ROUND(t.total_input_intensity, 4) AS total_input_intensity,
       t.supplier_count,
       ROUND(SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity), 4) AS customer_reliance_share
@@ -113,7 +138,7 @@ def query_cascade_exposure(
     """
 
     job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("seed_id", "STRING", business_id)]
+        query_parameters=[bigquery.ScalarQueryParameter("seed_id", "STRING", resolved_id)]
     )
 
     try:
@@ -130,6 +155,8 @@ def query_cascade_exposure(
                 r["seed_intensity"] = round(float(r["seed_intensity"]), 4)
             if r.get("total_input_intensity") is not None:
                 r["total_input_intensity"] = round(float(r["total_input_intensity"]), 4)
+            if r.get("metres") is not None:
+                r["metres"] = round(float(r["metres"]))
 
 
         seed_name = fwd_rows[0]["seed_name"] if fwd_rows else "Unknown"
@@ -145,7 +172,7 @@ def query_cascade_exposure(
         multiplier_score = round(direct_reliance_sum * 10.0 + len(indirect_exposed_ids) * 0.5, 2)
 
         return {
-            "seed_id": business_id,
+            "seed_id": resolved_id,
             "seed_name": seed_name,
             "seed_naics4": seed_naics4,
             "max_depth": max_depth,
@@ -619,6 +646,65 @@ def discover_priority_candidates(
             "status": "failed",
             "hint": "Ensure BigQuery reservation and property graph LocalEconomy are created.",
         }
+
+
+def lookup_business_by_name(
+    query: str,
+    limit: int = 5,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Finds corridor businesses and their IDs by business name, keyword, or partial string.
+
+    Use this when a user asks about a business by name (e.g., 'Cumaica Coffee', 'Sour Flour')
+    instead of providing an explicit business_id.
+
+    Args:
+        query: Business name, partial name, or search keyword.
+        limit: Maximum number of matching candidates to return (default 5).
+        project_id: Optional GCP project ID override.
+
+    Returns:
+        Structured dict with matching businesses, their IDs, NAICS4 industries, and addresses.
+    """
+    client = bigquery.Client(project=project_id or PROJECT_ID)
+    p_id = project_id or PROJECT_ID
+
+    sql = f"""
+    SELECT
+      business_id,
+      name,
+      naics4,
+      address,
+      zip
+    FROM `{p_id}.{DATASET}.businesses`
+    WHERE LOWER(name) LIKE CONCAT('%', LOWER(@q), '%')
+    ORDER BY
+      CASE
+        WHEN LOWER(name) = LOWER(@q) THEN 1
+        WHEN STARTS_WITH(LOWER(name), LOWER(@q)) THEN 2
+        ELSE 3
+      END,
+      name ASC
+    LIMIT @limit
+    """
+    job_cfg = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("q", "STRING", query.strip()),
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+        ]
+    )
+
+    try:
+        matches = [dict(r) for r in client.query(sql, job_config=job_cfg).result()]
+        return {
+            "query": query,
+            "match_count": len(matches),
+            "matches": matches,
+            "status": "success" if matches else "not_found",
+            "message": f"Found {len(matches)} matching business(es)." if matches else f"No business found matching '{query}' in corridor dataset.",
+        }
+    except Exception as e:
+        return {"query": query, "error": str(e), "status": "failed"}
 
 
 def read_dataset_table(

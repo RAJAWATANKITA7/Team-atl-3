@@ -229,7 +229,7 @@ function graphSVG(c){
   const dpos={};
   direct.forEach((d,i)=>{const y=ys(direct.length,i);dpos[d.buyer_id]=y;
     o+=`<path class="edge" style="stroke-width:${1+(d.seed_intensity||0)*6}" d="M${seedX+50},${cy} C${seedX+120},${cy} ${dX-130},${y} ${dX-70},${y}"/><text x="${seedX+105}" y="${(cy+y)/2-4}" style="fill:var(--mod)">${d.seed_intensity!=null?d.seed_intensity.toFixed(2):""}</text>
-    <rect class="node" x="${dX-70}" y="${y-18}" width="150" height="36" rx="6"/><text x="${dX-64}" y="${y-4}">${esc((d.buyer_name||d.buyer_id).slice(0,22))}</text><text x="${dX-64}" y="${y+10}" style="fill:var(--mut)">reliance ${pct(d.customer_reliance_share)} · ${d.metres??"?"} m</text>`});
+    <rect class="node" x="${dX-70}" y="${y-18}" width="150" height="36" rx="6"/><text x="${dX-64}" y="${y-4}">${esc((d.buyer_name||d.buyer_id).slice(0,22))}</text><text x="${dX-64}" y="${y+10}" style="fill:var(--mut)">reliance ${pct(d.customer_reliance_share)} · ${d.metres!=null?Math.round(d.metres):"?"} m</text>`});
   const flat=[];Object.entries(hop2).forEach(([from,l])=>l.forEach(n=>flat.push({from,...n})));
   flat.forEach((n,i)=>{const y=ys(flat.length,i),fy=dpos[n.from]??cy;
     o+=`<path class="edge" d="M${dX+80},${fy} C${dX+130},${fy} ${h2X-110},${y} ${h2X-60},${y}"/><rect class="node" x="${h2X-60}" y="${y-16}" width="140" height="32" rx="6"/><text x="${h2X-54}" y="${y-2}">${esc((n.name||n.id).slice(0,17))}</text><text x="${h2X-54}" y="${y+10}" style="fill:var(--mut)">${n.w!=null&&!isNaN(n.w)?"w "+n.w.toFixed(2):""}</text>`});
