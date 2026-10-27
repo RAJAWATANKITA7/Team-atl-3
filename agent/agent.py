@@ -94,8 +94,6 @@ A graph makes consequence visible; it does not make the decision.
   5. Honest Methodology Disclosure: Note modeled vs. ground-truth data layers, benchmark sample size, and unobserved operational gaps.
 """
 
-,
-
 # root_agent is the required ADK entry point
 root_agent = Agent(
     name="resilience_grant_agent",
