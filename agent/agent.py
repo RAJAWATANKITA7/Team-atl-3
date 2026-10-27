@@ -14,6 +14,8 @@ import os
 from google.adk.agents import Agent
 
 from .tools import (
+    audit_equity_and_neighborhood_need,
+    discover_priority_candidates,
     evaluate_grant_recommendation,
     query_cascade_exposure,
     read_dataset_table,
@@ -25,12 +27,15 @@ from .tools import (
 MCP_TOOLBOX_URL = os.environ.get("MCP_TOOLBOX_URL")
 
 tools = [
+    discover_priority_candidates,
     query_cascade_exposure,
     evaluate_grant_recommendation,
     validate_sba_ground_truth,
+    audit_equity_and_neighborhood_need,
     read_dataset_table,
     write_grant_decision,
 ]
+
 
 
 # If an MCP Toolbox is running, connect ToolboxToolset
