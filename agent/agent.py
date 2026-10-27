@@ -14,7 +14,9 @@ import os
 from google.adk.agents import Agent
 
 from .tools import (
-    audit_equity_and_neighborhood_need,
+    allocate_portfolio_grants,
+    assess_footfall_commuter_exposure,
+    audit_corridor_equity_and_portfolio_bias,
     discover_priority_candidates,
     evaluate_grant_recommendation,
     query_cascade_exposure,
@@ -30,11 +32,14 @@ tools = [
     discover_priority_candidates,
     query_cascade_exposure,
     evaluate_grant_recommendation,
+    allocate_portfolio_grants,
     validate_sba_ground_truth,
-    audit_equity_and_neighborhood_need,
+    assess_footfall_commuter_exposure,
+    audit_corridor_equity_and_portfolio_bias,
     read_dataset_table,
     write_grant_decision,
 ]
+
 
 
 
