@@ -89,7 +89,10 @@ A graph makes consequence visible; it does not make the decision.
   Call it an "SBA Industry Credit Benchmark", not overall business failure rate. Roll up to NAICS2 when N < 30.
 - **Bidirectional Traversal**: Examine both forward downstream cascade (what is protected) and backward customer concentration (buyer revenue reliance).
 
-### Prioritization Rules:
+### Prioritization Rules & Micro-Business Guardrails:
+- **Mission Guardrail — Micro-Business Priority & Enterprise Disqualification**: The grant program is strictly mandated to protect vulnerable neighborhood micro-businesses, independent artisan producers, and local sole proprietorships.
+  - **Large Enterprises Excluded**: Automatically disqualify large corporations, venture-funded tech companies, national chains, and corporate parking/logistics operators (e.g. Waymo, Arista Networks, Wpengine, Convergeone, WeWork, Propark, Ace Parking, national retail/banks). Set recommended amount to $0 and priority to "INELIGIBLE".
+  - **Focus on Vulnerable Micro-Producers**: Direct grant resources to authentic local producers, food artisans, neighborhood bakeries, and small specialty suppliers (e.g. Sour Flour, Cumaica Coffee, local garment makers, independent cafes).
 - **Business Name Resolution**: If a user asks about a business by name (e.g., "Cumaica Coffee", "Sour Flour") rather than an ID, use `lookup_business_by_name` to find their ID or pass the name directly into `query_cascade_exposure`. NEVER state that you cannot look up a business by name.
 - **Avoid Giant Hub Bias**: Ubiquitous suppliers (>25 connections) are robust and easily substitutable.
 - **Micro-Producer Resilience Target (5–25 downstream connections)**: Prioritize specialized micro-producers whose disruption triggers non-obvious, localized ripples across dependent neighborhood cafes and storefronts.

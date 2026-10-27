@@ -218,6 +218,47 @@ def evaluate_grant_recommendation(
     is_hub = total_downstream_exposed_count > 25
     is_sole_source = (corridor_peers_in_naics == 1)
 
+    # Guardrail: Disqualify large enterprises / well-capitalized tech/corporate/national entities
+    KNOWN_ENTERPRISE_KEYWORDS = [
+        "waymo", "arista", "alphabet", "google", "meta", "apple", "salesforce",
+        "wework", "wpengine", "convergeone", "target", "walgreens", "safeway",
+        "starbucks", "ikea", "bank", "hound technology", "honeycomb", "replica ai",
+        "moesif", "exabyte", "dcmn", "constructor.io", "propark", "impark", "ace parking",
+    ]
+    
+    # Query business name if not known to check against enterprise list
+    business_name = ""
+    try:
+        client = bigquery.Client(project=PROJECT_ID)
+        bn_rows = list(client.query(
+            f"SELECT name FROM `{PROJECT_ID}.{DATASET}.businesses` WHERE business_id = @bid LIMIT 1",
+            job_config=bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("bid", "STRING", seed_business_id)])
+        ).result())
+        if bn_rows:
+            business_name = bn_rows[0]["name"]
+    except Exception:
+        pass
+
+    is_enterprise = any(k in business_name.lower() for k in KNOWN_ENTERPRISE_KEYWORDS)
+
+    if is_enterprise:
+        return {
+            "business_id": seed_business_id,
+            "business_name": business_name,
+            "priority": "INELIGIBLE",
+            "recommended_amount": 0.0,
+            "cascade_multiplier_score": cascade_multiplier_score,
+            "is_hub_penalized": is_hub,
+            "is_sole_source_artifact": is_sole_source,
+            "is_enterprise_disqualified": True,
+            "rationale": (
+                f"DISQUALIFIED UNDER MICRO-BUSINESS GUARDRAIL: '{business_name}' is a large enterprise, "
+                "well-capitalized corporation, or multi-location commercial entity. Micro-grant funding "
+                "is strictly reserved for vulnerable neighborhood micro-producers and local sole proprietorships."
+            ),
+            "status": "success",
+        }
+
     if total_downstream_exposed_count == 0:
         recommended_amount = 0.0
         priority = "LOW"
@@ -277,6 +318,10 @@ def allocate_portfolio_grants(
     runner_ups = []
 
     for cand in sorted_candidates:
+        if cand.get("is_enterprise_disqualified") or cand.get("priority") == "INELIGIBLE":
+            runner_ups.append({**cand, "status": "INELIGIBLE", "reason": "Disqualified under micro-business guardrail (large enterprise / corporate entity)."})
+            continue
+
         rec_amt = float(cand.get("recommended_amount", 0.0))
         if rec_amt <= 0.0:
             runner_ups.append({**cand, "status": "DECLINED", "reason": "Zero or negligible cascade multiplier."})
@@ -619,14 +664,27 @@ def discover_priority_candidates(
         """
         counts = {r["naics4"]: r["count_in_corridor"] for r in client.query(sole_source_query).result()}
 
+        ENTERPRISE_KEYWORDS = [
+            "waymo", "arista", "alphabet", "google", "meta", "apple", "salesforce",
+            "wework", "wpengine", "convergeone", "target", "walgreens", "safeway",
+            "starbucks", "ikea", "bank", "hound technology", "honeycomb", "replica ai",
+            "moesif", "exabyte", "dcmn", "constructor.io", "propark", "impark", "ace parking",
+            "parking management", "tower valet",
+        ]
+
         enriched = []
         for r in rows:
+            bname = str(r.get("business", ""))
+            # Micro-business guardrail: exclude tech giants, national corporate chains, and enterprise parking operators
+            if any(k in bname.lower() for k in ENTERPRISE_KEYWORDS):
+                continue
+
             ind = r.get("industry")
             n_in_corridor = counts.get(ind, 1)
             is_sole_source = (n_in_corridor == 1)
             enriched.append({
                 "business_id": r["business_id"],
-                "business_name": r["business"],
+                "business_name": bname,
                 "industry": ind,
                 "exposed_2hop": r["exposed_2hop"],
                 "is_sole_source_in_corridor": is_sole_source,
