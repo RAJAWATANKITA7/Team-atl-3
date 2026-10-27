@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Supplier Continuity Advisor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono&display=swap" rel="stylesheet">
+<style>
+/* Material Design 3 tokens */
+:root{--primary:#0b57d0;--on-primary:#fff;--primary-container:#d3e3fd;--on-primary-container:#041e49;
+--secondary-container:#dde3ea;--on-secondary-container:#151c22;
+--tertiary-container:#ffddb0;--on-tc:#281900;
+--surface:#fdfcff;--sc-low:#f3f4f9;--sc:#eceef4;--sc-high:#e6e8ee;--bg:#f8f9fe;--card:var(--surface);
+--ink:#1a1c1e;--mut:#44474e;--line:#c4c6d0;--outline:#74777f;
+--real:#146c2e;--real-c:#c4eed0;--mod:#7d5700;--mod-c:#ffddb0;--bad:#ba1a1a;--bad-c:#ffdad6;--ok:#146c2e;
+--e1:0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15);--e2:0 1px 2px rgba(0,0,0,.3),0 2px 6px 2px rgba(0,0,0,.15)}
+@media (prefers-color-scheme:dark){:root{--primary:#a8c7fa;--on-primary:#062e6f;--primary-container:#0842a0;--on-primary-container:#d3e3fd;
+--secondary-container:#3f484f;--on-secondary-container:#dde3ea;--tertiary-container:#5f4100;--on-tc:#ffddb0;
+--surface:#1a1c1e;--sc-low:#202225;--sc:#242629;--sc-high:#2f3033;--bg:#111314;--ink:#e3e2e6;--mut:#c4c6d0;--line:#44474e;--outline:#8e9099;
+--real:#79dd8f;--real-c:#00531c;--mod:#f6be6a;--mod-c:#5f4100;--bad:#ffb4ab;--bad-c:#93000a;--ok:#79dd8f}}
+*{box-sizing:border-box}
+body{margin:0;font:400 14px/20px Roboto,system-ui,sans-serif;letter-spacing:.015em;background:var(--bg);color:var(--ink);height:100vh;display:flex;flex-direction:column}
+.appbar{background:var(--sc);color:var(--ink);padding:0 16px;height:64px;display:flex;align-items:center;gap:12px;flex:none}
+.appbar .logo{width:40px;height:40px;border-radius:12px;background:var(--primary-container);color:var(--on-primary-container);display:grid;place-items:center}
+.appbar h1{font:400 22px/28px Roboto,sans-serif;margin:0}
+.appbar .sub{font-size:12px;color:var(--mut);line-height:16px}
+.sp{flex:1}
+.pill{font:500 12px/16px Roboto,sans-serif;padding:6px 12px;border-radius:8px;background:var(--sc-high);color:var(--mut)}
+.pill.ok::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px}
+.pill.err::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--bad);margin-right:6px}
+.btn{font:500 14px/20px Roboto,sans-serif;border:1px solid var(--outline);background:transparent;color:var(--primary);height:40px;padding:0 24px;border-radius:20px;cursor:pointer;position:relative;overflow:hidden}
+.btn:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}.btn:active{background:color-mix(in srgb,var(--primary) 12%,transparent)}
+.btn.filled{background:var(--primary);color:var(--on-primary);border:0}.btn.filled:hover{box-shadow:var(--e1);background:var(--primary)}
+.btn:disabled{opacity:.38;cursor:wait}
+main{flex:1;display:grid;grid-template-columns:minmax(340px,38%) 1fr;min-height:0;gap:12px;padding:0 12px 12px}
+@media(max-width:860px){main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
+#chat,#side{background:var(--surface);border-radius:24px;min-height:0;display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--e1)}
+#log{flex:1;overflow:auto;padding:16px}
+.msg{margin:0 0 12px;display:flex;flex-direction:column}
+.msg .who{font:500 11px/16px Roboto,sans-serif;color:var(--mut);margin:0 12px 2px}
+.msg .b{padding:10px 16px;border-radius:16px;white-space:pre-wrap;word-wrap:break-word;max-width:92%}
+.msg.user{align-items:flex-end}.msg.user .b{background:var(--primary);color:var(--on-primary);border-bottom-right-radius:4px}
+.msg.agent .b{background:var(--sc-low);border-bottom-left-radius:4px}
+.step{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mut);margin:0 0 6px;padding:4px 12px;border-radius:8px;background:var(--sc-high);cursor:pointer;width:fit-content;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.step.done{background:var(--real-c);color:#0a2d12}.step.fail{background:var(--bad-c);color:#410002}
+@media (prefers-color-scheme:dark){.step.done{color:#c4eed0}.step.fail{color:#ffdad6}}
+.chips{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 8px}
+.chip{font:500 13px/20px Roboto,sans-serif;border:1px solid var(--outline);background:transparent;color:var(--ink);border-radius:8px;height:32px;padding:0 12px;cursor:pointer}
+.chip:hover{background:color-mix(in srgb,var(--ink) 8%,transparent)}
+form{display:flex;gap:8px;padding:8px 16px 16px;align-items:flex-end}
+textarea{flex:1;resize:none;height:56px;border:1px solid var(--outline);border-radius:28px;padding:16px 20px;font:400 16px/24px Roboto,sans-serif;background:transparent;color:var(--ink)}
+textarea:focus{outline:2px solid var(--primary);border-color:transparent}
+button.go{height:56px;width:56px;padding:0;border-radius:16px;border:0;background:var(--primary-container);color:var(--on-primary-container);cursor:pointer;display:grid;place-items:center;box-shadow:var(--e1)}
+button.go:hover{box-shadow:var(--e2)}button.go:disabled{opacity:.38;cursor:wait}
+nav{display:flex;padding:0 8px;border-bottom:1px solid var(--line);background:var(--surface);flex:none}
+nav button{flex:1;border:0;background:none;height:48px;cursor:pointer;color:var(--mut);font:500 14px/20px Roboto,sans-serif;position:relative;display:flex;align-items:center;justify-content:center;gap:6px}
+nav button:hover{background:color-mix(in srgb,var(--ink) 8%,transparent)}
+nav button.on{color:var(--primary)}nav button.on::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:3px;background:var(--primary);border-radius:3px 3px 0 0}
+nav .badge{background:var(--primary);color:var(--on-primary);border-radius:8px;font-size:11px;line-height:16px;padding:0 6px;min-width:16px;text-align:center}
+.pane{display:none;flex:1;overflow:auto;padding:16px;background:var(--bg)}.pane.on{display:block}
+.card{background:var(--surface);border-radius:16px;padding:16px 20px;margin-bottom:12px;box-shadow:var(--e1)}
+.card h3{margin:0 0 12px;font:500 16px/24px Roboto,sans-serif;letter-spacing:.009em;color:var(--ink);display:flex;align-items:center;gap:8px;flex-wrap:wrap;text-transform:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.kpi{background:var(--sc-low);border-radius:12px;padding:12px 14px}
+.kpi b{display:block;font:400 28px/36px Roboto,sans-serif}.kpi span{font-size:12px;color:var(--mut)}
+.tag{display:inline-block;font:500 11px/16px Roboto,sans-serif;padding:2px 8px;border-radius:8px;letter-spacing:.04em;vertical-align:middle}
+.tag.real{background:var(--real-c);color:#0a2d12}.tag.mod{background:var(--mod-c);color:#281900}.tag.bad{background:var(--bad-c);color:#410002}
+@media (prefers-color-scheme:dark){.tag.real{color:#c4eed0}.tag.mod{color:#ffddb0}.tag.bad{color:#ffdad6}}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);font-size:14px}
+th{font:500 12px/16px Roboto,sans-serif;color:var(--mut)}tr.click{cursor:pointer}tr.click:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}
+.empty{color:var(--mut);padding:48px 16px;text-align:center}
+svg text{fill:var(--ink);font:11px Roboto,system-ui,sans-serif}svg .node{fill:var(--sc-low);stroke:var(--outline);stroke-width:1}
+svg .seed{fill:var(--tertiary-container);stroke:var(--mod);stroke-width:1.5}svg .edge{stroke:var(--primary);fill:none;opacity:.8}svg .up{stroke:var(--outline);stroke-dasharray:4 3;fill:none}
+details.t{border-radius:12px;margin-bottom:8px;background:var(--surface);box-shadow:var(--e1);overflow:hidden}
+details.t summary{padding:12px 16px;cursor:pointer;font:500 14px/20px Roboto,sans-serif}
+pre{margin:0;padding:12px 16px;overflow:auto;font:12px/18px "Roboto Mono",monospace;background:var(--sc-low);max-height:300px}
+.memo h1,.memo h2,.memo h3,.memo h4,.memo h5{margin:16px 0 6px;font-weight:500}.memo ul{padding-left:20px}.memo p{margin:6px 0}
+.legend{font-size:12px;color:var(--mut);margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tools{display:flex;gap:8px;margin-bottom:12px}
+.tools button{font:500 14px/20px Roboto,sans-serif;border:1px solid var(--outline);background:transparent;color:var(--primary);height:36px;padding:0 16px;border-radius:18px;cursor:pointer}
+.tools button:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}
+.note{font-size:12px;color:var(--mut)}
+:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+</style>
+</head>
+<body>
+<header class="appbar">
+  <div class="logo"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 3 7v2h18V7L12 2zM5 11v6H3v3h18v-3h-2v-6h-2v6h-3v-6h-2v6h-2v-6H9v6H7v-6H5z"/></svg></div>
+  <div><h1>Supplier Continuity Advisor</h1><div class="sub">Central Market corridor · micro-producer track · decision support, not a decision</div></div>
+  <span class="sp"></span>
+  <span class="pill" id="conn">connecting</span>
+  <span class="pill" id="appname"></span>
+  <button class="btn" id="newsess">New session</button>
+</header>
+<main>
+  <section id="chat">
+    <div id="log"></div>
+    <div class="chips" id="chips"></div>
+    <form id="f"><textarea id="q" placeholder="Ask the advisor… (Enter to send, Shift+Enter for newline)"></textarea><button class="go" id="send" aria-label="Send"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21 23 12 2 3v7l15 2-15 2z"/></svg></button></form>
+  </section>
+  <section id="side">
+    <nav id="tabs">
+      <button data-t="evidence" class="on">Evidence</button>
+      <button data-t="shortlist">Shortlist <span class="badge" id="b-sl" hidden></span></button>
+      <button data-t="trace">Tool trace <span class="badge" id="b-tr" hidden></span></button>
+      <button data-t="memo">Memo</button>
+    </nav>
+    <div class="pane on" id="p-evidence"><div class="empty">Ask the advisor to analyse a supplier. The cascade graph, SBA, equity and footfall evidence appear here as tools return.</div></div>
+    <div class="pane" id="p-shortlist"><div class="empty">No shortlist yet. Try “Find priority supplier candidates”.</div></div>
+    <div class="pane" id="p-trace"><div class="empty">Every tool call and raw result is listed here.</div></div>
+    <div class="pane" id="p-memo"><div class="empty">The agent's final memo appears here.</div></div>
+  </section>
+</main>
+<script>
+(()=>{
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const BASE=location.pathname.replace(/\/ui\/?(index\.html)?$/,"").replace(/\/$/,"");
+const rid=()=>Math.random().toString(36).slice(2,10);
+let APP=null,USER="u_"+rid(),SESS=null,busy=false;
+const trace=[];let memoText="";
+const E={cascade:null,sba:null,eval:null,equity:null,foot:null,alloc:null,cand:null};
+
+function tab(t){document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on",p.id==="p-"+t))}
+$("#tabs").addEventListener("click",e=>{const b=e.target.closest("button");if(b)tab(b.dataset.t)});
+
+async function api(path,opt){const r=await fetch(BASE+path,opt);if(!r.ok)throw new Error(path+" → "+r.status+" "+(await r.text()).slice(0,200));return r.json()}
+async function init(){
+  try{
+    const apps=await api("/list-apps");
+    const want=new URLSearchParams(location.search).get("app");
+    APP=want&&apps.includes(want)?want:(apps.includes("agent")?"agent":apps[0]);
+    if(!APP)throw new Error("no agents found");
+    $("#conn").textContent="connected";$("#conn").className="pill ok";$("#appname").textContent="agent: "+APP;
+    await newSession();
+  }catch(e){$("#conn").textContent="offline";$("#conn").className="pill err";addMsg("agent","Cannot reach the ADK API: "+e.message)}
+}
+async function newSession(){
+  SESS="s_"+rid();
+  await api(`/apps/${APP}/users/${USER}/sessions/${SESS}`,{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+  $("#log").innerHTML="";trace.length=0;memoText="";Object.keys(E).forEach(k=>E[k]=null);renderAll();
+  addMsg("agent","Hi. I look for upstream suppliers whose failure would cascade through the Central Market corridor, and build a case you can defend. Nobody has applied for anything; I start from the graph. Supplies and footfall edges are modeled; businesses, SBA loans and census data are real.");
+}
+$("#newsess").onclick=()=>newSession().catch(e=>addMsg("agent",e.message));
+
+const CHIPS=["Find priority supplier candidates in the corridor","Evaluate the top candidate in depth","Allocate a $50,000 budget across the shortlist","Audit the portfolio for equity bias"];
+$("#chips").innerHTML=CHIPS.map(c=>`<button class="chip">${esc(c)}</button>`).join("");
+$("#chips").addEventListener("click",e=>{if(e.target.classList.contains("chip"))send(e.target.textContent)});
+
+function addMsg(role,text){const d=document.createElement("div");d.className="msg "+role;d.innerHTML=`<div class="who">${role==="user"?"You":"Advisor"}</div><div class="b"></div>`;d.querySelector(".b").textContent=text;$("#log").appendChild(d);$("#log").scrollTop=1e9;return d.querySelector(".b")}
+function setB(b,t){b.style.whiteSpace="normal";b.innerHTML=md(t);$("#log").scrollTop=1e9}
+function addStep(name,args){const d=document.createElement("div");d.className="step";d.textContent="⚙ "+name+" "+JSON.stringify(args).slice(0,90);d.onclick=()=>tab("trace");$("#log").appendChild(d);$("#log").scrollTop=1e9;return d}
+
+$("#f").addEventListener("submit",e=>{e.preventDefault();const v=$("#q").value.trim();if(v)send(v)});
+$("#q").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("#f").requestSubmit()}});
+
+async function send(text){
+  if(busy||!SESS)return;busy=true;$("#send").disabled=true;$("#q").value="";
+  addMsg("user",text);
+  const steps={};let bubble=null;let acc="";
+  const body={appName:APP,userId:USER,sessionId:SESS,newMessage:{role:"user",parts:[{text}]},streaming:false};
+  try{
+    const r=await fetch(BASE+"/run_sse",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok||!r.body)throw new Error("run_sse "+r.status);
+    const rd=r.body.getReader(),dec=new TextDecoder();let buf="";
+    for(;;){
+      const {done,value}=await rd.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      let i;while((i=buf.indexOf("\n\n"))>=0){
+        const chunk=buf.slice(0,i);buf=buf.slice(i+2);
+        const line=chunk.split("\n").filter(l=>l.startsWith("data:")).map(l=>l.slice(5).trim()).join("");
+        if(!line)continue;let ev;try{ev=JSON.parse(line)}catch{continue}
+        if(ev.error||ev.errorMessage){addMsg("agent","Error: "+(ev.errorMessage||ev.error));continue}
+        const parts=(ev.content&&ev.content.parts)||[];
+        for(const p of parts){
+          const fc=p.functionCall||p.function_call,fr=p.functionResponse||p.function_response;
+          if(fc){const el=addStep(fc.name,fc.args||{});steps[fc.id||fc.name]=el;trace.push({id:fc.id,name:fc.name,args:fc.args||{},result:null,t:Date.now()});renderTrace()}
+          else if(fr){
+            const t=trace.find(x=>x.id===fr.id&&!x.result)||trace.find(x=>x.name===fr.name&&!x.result);
+            const res=fr.response||{};if(t)t.result=res;
+            const el=steps[fr.id||fr.name];if(el){const bad=res.status&&res.status!=="success";el.classList.add(bad?"fail":"done");el.textContent=(bad?"✕ ":"✓ ")+fr.name}
+            ingest(fr.name,res,t?t.args:{});renderTrace();
+          }else if(p.text&&!p.thought){
+            if(ev.partial){acc+=p.text;if(!bubble)bubble=addMsg("agent","");setB(bubble,acc)}
+            else{acc=p.text;if(!bubble)bubble=addMsg("agent","");setB(bubble,acc)}
+          }
+        }
+      }
+    }
+    if(acc){memoText=acc;renderMemo()}
+  }catch(e){addMsg("agent","Request failed: "+e.message)}
+  busy=false;$("#send").disabled=false;
+}
+
+function ingest(name,r,args){
+  if(name==="query_cascade_exposure")E.cascade=r;
+  else if(name==="validate_sba_ground_truth")E.sba=r;
+  else if(name==="evaluate_grant_recommendation")E.eval=r;
+  else if(name==="audit_corridor_equity_and_portfolio_bias")E.equity=r;
+  else if(name==="assess_footfall_commuter_exposure")E.foot=r;
+  else if(name==="allocate_portfolio_grants")E.alloc=r;
+  else if(name==="discover_priority_candidates")E.cand=r;
+  renderAll();
+}
+function renderAll(){renderEvidence();renderShortlist();renderTrace();renderMemo()}
+
+const tag=(k,t)=>`<span class="tag ${k}">${t}</span>`;
+const pct=x=>x==null?"–":(Math.round(x*1000)/10)+"%";
+const usd=x=>x==null?"–":"$"+Number(x).toLocaleString();
+
+function parsePath(s){
+  try{const a=typeof s==="string"?JSON.parse(s):s;const nodes=[],edges=[];
+    (Array.isArray(a)?a:[]).forEach(x=>{if(x.kind==="node"||(x.labels&&!x.destination_node_identifier&&!x.properties?.intensity&&x.properties?.business_id))nodes.push({id:x.properties?.business_id||x.identifier,name:x.properties?.name||x.properties?.business_name||x.properties?.business_id||x.identifier});
+      else if(x.kind==="edge"||x.destination_node_identifier)edges.push({w:Number(x.properties?.intensity??x.properties?.input_intensity??NaN)})});
+    return {nodes,edges}}catch{return null}
+}
+
+function graphSVG(c){
+  const direct=c.direct_customers||[],up=c.upstream_suppliers||[];
+  const hop2={};
+  (c.sample_paths||[]).forEach(s=>{const p=parsePath(s);if(!p||p.nodes.length<3)return;const a=p.nodes[1],b=p.nodes[2];(hop2[a.id]=hop2[a.id]||[]).push({id:b.id,name:b.name,w:p.edges[1]?.w})});
+  const rows=Math.max(direct.length,up.length,Object.values(hop2).flat().length,1);
+  const H=Math.max(220,rows*54+40),W=900,cy=H/2;
+  const sx=[60,0],seedX=300,dX=520,h2X=760;
+  let o=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Cascade graph">`;
+  o+=`<text x="${sx[0]}" y="16" style="font-weight:600">UPSTREAM (dependencies)</text><text x="${seedX-40}" y="16" style="font-weight:600">SEED</text><text x="${dX-70}" y="16" style="font-weight:600">DIRECT CUSTOMERS</text><text x="${h2X-60}" y="16" style="font-weight:600">HOP-2 EXPOSED</text>`;
+  const ys=(n,i)=>40+(H-60)*(n===1?.5:i/(n-1));
+  up.forEach((u,i)=>{const y=ys(up.length,i);o+=`<path class="up" d="M130,${y} C200,${y} 220,${cy} ${seedX-50},${cy}"/><rect class="node" x="10" y="${y-16}" width="120" height="32" rx="6"/><text x="16" y="${y-2}">${esc((u.supplier_name||u.supplier_id).slice(0,18))}</text><text x="16" y="${y+10}" style="fill:var(--mut)">NAICS ${esc(u.supplier_industry||"")}</text>`});
+  const dpos={};
+  direct.forEach((d,i)=>{const y=ys(direct.length,i);dpos[d.buyer_id]=y;
+    o+=`<path class="edge" style="stroke-width:${1+(d.seed_intensity||0)*6}" d="M${seedX+50},${cy} C${seedX+120},${cy} ${dX-130},${y} ${dX-70},${y}"/><text x="${seedX+105}" y="${(cy+y)/2-4}" style="fill:var(--mod)">${d.seed_intensity!=null?d.seed_intensity.toFixed(2):""}</text>
+    <rect class="node" x="${dX-70}" y="${y-18}" width="150" height="36" rx="6"/><text x="${dX-64}" y="${y-4}">${esc((d.buyer_name||d.buyer_id).slice(0,22))}</text><text x="${dX-64}" y="${y+10}" style="fill:var(--mut)">reliance ${pct(d.customer_reliance_share)} · ${d.metres??"?"} m</text>`});
+  const flat=[];Object.entries(hop2).forEach(([from,l])=>l.forEach(n=>flat.push({from,...n})));
+  flat.forEach((n,i)=>{const y=ys(flat.length,i),fy=dpos[n.from]??cy;
+    o+=`<path class="edge" d="M${dX+80},${fy} C${dX+130},${fy} ${h2X-110},${y} ${h2X-60},${y}"/><rect class="node" x="${h2X-60}" y="${y-16}" width="140" height="32" rx="6"/><text x="${h2X-54}" y="${y-2}">${esc((n.name||n.id).slice(0,17))}</text><text x="${h2X-54}" y="${y+10}" style="fill:var(--mut)">${n.w!=null&&!isNaN(n.w)?"w "+n.w.toFixed(2):""}</text>`});
+  o+=`<rect class="node seed" x="${seedX-60}" y="${cy-24}" width="120" height="48" rx="8"/><text x="${seedX-44}" y="${cy-6}" style="font-weight:700;fill:var(--on-tc)">${esc((c.seed_name||c.seed_id||"").slice(0,13))}</text><text x="${seedX-44}" y="${cy+9}" style="fill:var(--on-tc)">NAICS ${esc(c.seed_naics4||"")}</text>`;
+  return o+`</svg>`;
+}
+
+function renderEvidence(){
+  const p=$("#p-evidence");
+  if(!E.cascade&&!E.sba&&!E.eval&&!E.equity&&!E.foot){p.innerHTML=`<div class="empty">Ask the advisor to analyse a supplier. Evidence appears here as tools return.</div>`;return}
+  let h=`<div class="legend">${tag("real","REAL")} businesses, SBA loans, census/LEHD counts &nbsp; ${tag("mod","MODELED")} Supplies and DrawsFootfall edges (BEA/LEHD-derived)</div>`;
+  const c=E.cascade;
+  if(c){
+    h+=`<div class="card"><h3>Cascade from ${esc(c.seed_name||c.seed_id)} ${tag("mod","MODELED")}</h3><div class="grid">
+      <div class="kpi"><b>${c.total_downstream_exposed_count??"–"}</b><span>downstream exposed</span></div>
+      <div class="kpi"><b>${c.direct_customers_count??"–"}</b><span>direct customers</span></div>
+      <div class="kpi"><b>${c.indirect_customers_count??"–"}</b><span>indirect (hop 2)</span></div>
+      <div class="kpi"><b>${c.cascade_multiplier_score??"–"}</b><span>cascade score</span></div>
+      <div class="kpi"><b>${c.upstream_single_point_of_failure?"Yes":"No"}</b><span>single upstream source</span></div></div>
+      <div style="margin-top:10px">${graphSVG(c)}</div>
+      <div class="note">Edge width = input intensity. Hop-2 nodes are read from the returned traversal paths; if none show, the tool returned no 2-hop paths.</div></div>`}
+  const v=E.eval;
+  if(v)h+=`<div class="card"><h3>Sizing recommendation</h3><div class="grid"><div class="kpi"><b>${esc(v.priority)}</b><span>priority</span></div><div class="kpi"><b>${usd(v.recommended_amount)}</b><span>suggested amount</span></div><div class="kpi"><b>${v.is_hub_penalized?"Yes":"No"}</b><span>hub penalty</span></div><div class="kpi"><b>${v.is_sole_source_artifact?"Yes":"No"}</b><span>sole-source artifact</span></div></div><p>${esc(v.rationale)}</p><p class="note">A grant changes a probability, not an outcome. Treat the amount as a starting point for human review.</p></div>`;
+  const s=E.sba;
+  if(s){
+    const st=s.direct_charged_off?tag("bad","CHARGED OFF"):s.direct_loan_match?tag("real","SBA LOAN ON RECORD"):tag("mod","NO RECORD → BENCHMARK");
+    h+=`<div class="card"><h3>SBA ground truth ${tag("real","REAL")}</h3><p>${st} &nbsp; Coverage: ${esc(s.corridor_coverage_percentage)}</p>
+    <p>Benchmark: <b>${esc(s.benchmark_level_used||"–")}</b>, n=${s.benchmark_sample_size??"–"}, seasoned charge-off rate ${pct(s.benchmark_seasoned_charge_off_rate)}.</p>
+    <p class="note">A missing record is unknown, not healthy. Context only; not a sizing input.</p>
+    ${(s.methodology_disclosures||[]).map(d=>`<p class="note">• ${esc(d)}</p>`).join("")}</div>`}
+  const q=E.equity;
+  if(q)h+=`<div class="card"><h3>Equity &amp; portfolio audit ${tag("real","REAL")}</h3><div class="grid"><div class="kpi"><b>${pct(q.funded_avg_tract_poverty)}</b><span>funded avg tract poverty</span></div><div class="kpi"><b>${pct(q.corridor_avg_poverty)}</b><span>corridor avg</span></div><div class="kpi"><b>${pct(q.transit_reliance_no_vehicle_pct)}</b><span>no-vehicle households</span></div></div><p>${esc(q.equity_status)}</p><p class="note">${esc(JSON.stringify(q.industry_breakdown||{}))}</p></div>`;
+  const f=E.foot;
+  if(f)h+=`<div class="card"><h3>Footfall / commuter exposure ${tag("mod","MODELED")}</h3><div class="grid"><div class="kpi"><b>${f.feeding_blocks_count??"–"}</b><span>feeding blocks</span></div><div class="kpi"><b>${f.allocated_daytime_workers??"–"}</b><span>allocated daytime workers</span></div><div class="kpi"><b>${f.avg_distance_metres??"–"} m</b><span>avg distance</span></div><div class="kpi"><b>${esc(f.footfall_vulnerability??"–")}</b><span>vulnerability</span></div></div></div>`;
+  p.innerHTML=h;
+}
+
+function renderShortlist(){
+  const p=$("#p-shortlist"),cand=E.cand,al=E.alloc;
+  if(!cand&&!al){p.innerHTML=`<div class="empty">No shortlist yet. Try “Find priority supplier candidates”.</div>`;$("#b-sl").hidden=true;return}
+  let h="";
+  if(cand){
+    h+=`<div class="card"><h3>Candidates (sweet-spot band ${esc(String(cand.sweet_spot_band||"").replace(/"/g,""))})</h3><table><tr><th>Business</th><th>NAICS</th><th>2-hop exposed</th><th>Flags</th></tr>`+
+    (cand.candidates||[]).map(c=>`<tr class="click" data-id="${esc(c.business_id)}" data-n="${esc(c.business_name)}"><td>${esc(c.business_name)}<div class="note">${esc(c.business_id)}</div></td><td>${esc(c.industry)}</td><td>${c.exposed_2hop}</td><td>${c.is_sole_source_in_corridor?tag("mod","sole source"):""}<div class="note">${esc(c.caveat||"")}</div></td></tr>`).join("")+`</table><p class="note">Click a row to ask the advisor to evaluate it.</p></div>`}
+  if(al){
+    h+=`<div class="card"><h3>Portfolio</h3><div class="grid"><div class="kpi"><b>${usd(al.total_budget)}</b><span>budget</span></div><div class="kpi"><b>${usd(al.total_allocated)}</b><span>allocated</span></div><div class="kpi"><b>${usd(al.unallocated_reserve)}</b><span>reserve</span></div><div class="kpi"><b>${al.funded_count}</b><span>funded</span></div></div>
+    <table style="margin-top:8px"><tr><th>Business</th><th>Allocated</th><th>Cascade</th><th></th></tr>`+
+    (al.funded_portfolio||[]).map(f=>`<tr><td>${esc(f.business_name||f.business_id)}</td><td>${usd(f.allocated_amount)}</td><td>${f.cascade_multiplier_score??""}</td><td>${tag("real","FUNDED")}</td></tr>`).join("")+
+    (al.runner_ups||[]).map(f=>`<tr><td>${esc(f.business_name||f.business_id)}</td><td>–</td><td>${f.cascade_multiplier_score??""}</td><td>${tag("mod","RUNNER-UP")}</td></tr>`).join("")+`</table></div>`}
+  p.innerHTML=h;const n=(cand?.candidate_count||0);$("#b-sl").hidden=!n;$("#b-sl").textContent=n;
+}
+$("#p-shortlist").addEventListener("click",e=>{const r=e.target.closest("tr.click");if(r){tab("evidence");send(`Evaluate ${r.dataset.n} (${r.dataset.id}) in depth: cascade, SBA validation and sizing.`)}});
+
+function renderTrace(){
+  const p=$("#p-trace");$("#b-tr").hidden=!trace.length;$("#b-tr").textContent=trace.length;
+  if(!trace.length){p.innerHTML=`<div class="empty">Every tool call and raw result is listed here.</div>`;return}
+  p.innerHTML=`<div class="tools"><button id="dl">Download trace JSON</button></div><br>`+trace.map((t,i)=>`<details class="t"><summary>${i+1}. ${esc(t.name)} ${t.result?(t.result.status&&t.result.status!=="success"?tag("bad","ERROR"):tag("real","OK")):'<span class="note">running…</span>'}</summary><pre>ARGS\n${esc(JSON.stringify(t.args,null,2))}\n\nRESULT\n${esc(JSON.stringify(t.result,null,2))}</pre></details>`).join("");
+  const dl=$("#dl");if(dl)dl.onclick=()=>save("trace.json",JSON.stringify(trace,null,2),"application/json");
+}
+function save(name,txt,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([txt],{type}));a.download=name;a.click()}
+
+function md(s){
+  const lines=esc(s).split("\n");let out="",ul=false;
+  const inl=t=>t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/`(.+?)`/g,"<code>$1</code>");
+  for(const l of lines){
+    const m=l.match(/^(#{1,4})\s+(.*)/);
+    if(/^\s*[-*]\s+/.test(l)){if(!ul){out+="<ul>";ul=true}out+="<li>"+inl(l.replace(/^\s*[-*]\s+/,""))+"</li>";continue}
+    if(ul){out+="</ul>";ul=false}
+    if(m)out+=`<h${m[1].length+1}>${inl(m[2])}</h${m[1].length+1}>`;else if(l.trim())out+="<p>"+inl(l)+"</p>";
+  }
+  return out+(ul?"</ul>":"");
+}
+function renderMemo(){
+  const p=$("#p-memo");
+  if(!memoText){p.innerHTML=`<div class="empty">The agent's final memo appears here.</div>`;return}
+  p.innerHTML=`<div class="tools"><button id="cp">Copy</button><button id="dm">Download .md</button></div><div class="legend" style="margin-top:10px">${tag("real","REAL")} measured data &nbsp; ${tag("mod","MODELED")} derived edges. The memo should say which is which; check it does.</div><div class="card memo">${md(memoText)}</div>`;
+  $("#cp").onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(memoText);
+  $("#dm").onclick=()=>save("memo.md",memoText,"text/markdown");
+}
+init();
+})();
+</script>
+</body>
+</html>
