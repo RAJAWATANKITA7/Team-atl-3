@@ -57,7 +57,11 @@ nav button{flex:1;border:0;background:none;height:48px;cursor:pointer;color:var(
 nav button:hover{background:color-mix(in srgb,var(--ink) 8%,transparent)}
 nav button.on{color:var(--primary)}nav button.on::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:3px;background:var(--primary);border-radius:3px 3px 0 0}
 nav .badge{background:var(--primary);color:var(--on-primary);border-radius:8px;font-size:11px;line-height:16px;padding:0 6px;min-width:16px;text-align:center}
-.pane{display:none;flex:1;overflow:auto;padding:16px;background:var(--bg)}.pane.on{display:block}
+.pane{display:none;flex:1;overflow:auto;padding:16px;background:var(--bg);position:relative}.pane.on{display:block}
+.pane.refreshing::before{content:"⏳ Refreshing data…";display:flex;align-items:center;justify-content:center;gap:8px;position:sticky;top:0;left:0;right:0;z-index:20;background:var(--primary-container);color:var(--on-primary-container);font:500 13px/18px Roboto,sans-serif;padding:8px 16px;border-radius:8px;margin-bottom:12px;box-shadow:var(--e1);animation:pulse 1.5s infinite ease-in-out}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.65}}
+.spin{display:inline-block;animation:spin 2s infinite linear}
+@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
 .card{background:var(--surface);border-radius:16px;padding:16px 20px;margin-bottom:12px;box-shadow:var(--e1)}
 .card h3{margin:0 0 12px;font:500 16px/24px Roboto,sans-serif;letter-spacing:.009em;color:var(--ink);display:flex;align-items:center;gap:8px;flex-wrap:wrap;text-transform:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
@@ -104,6 +108,7 @@ pre{margin:0;padding:12px 16px;overflow:auto;font:12px/18px "Roboto Mono",monosp
       <button data-t="shortlist">Shortlist <span class="badge" id="b-sl" hidden></span></button>
       <button data-t="trace">Tool trace <span class="badge" id="b-tr" hidden></span></button>
       <button data-t="memo">Memo</button>
+      <span class="pill" id="refresh-indicator" style="display:none;margin:auto 8px auto auto;font-size:12px;background:var(--primary-container);color:var(--on-primary-container);padding:4px 10px;border-radius:12px;">⏳ Refreshing…</span>
     </nav>
     <div class="pane on" id="p-evidence"><div class="empty">Ask the advisor to analyse a supplier. The cascade graph, SBA, equity and footfall evidence appear here as tools return.</div></div>
     <div class="pane" id="p-shortlist"><div class="empty">No shortlist yet. Try “Find priority supplier candidates”.</div></div>
@@ -154,9 +159,16 @@ function addStep(name,args){const d=document.createElement("div");d.className="s
 $("#f").addEventListener("submit",e=>{e.preventDefault();const v=$("#q").value.trim();if(v)send(v)});
 $("#q").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("#f").requestSubmit()}});
 
+function setRefreshing(on){
+  const ind=$("#refresh-indicator");
+  if(ind)ind.style.display=on?"inline-flex":"none";
+  document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("refreshing",on));
+}
+
 async function send(text){
   if(busy||!SESS)return;busy=true;$("#send").disabled=true;$("#q").value="";
   addMsg("user",text);
+  setRefreshing(true);
   const steps={};let bubble=null;let acc="";
   const body={appName:APP,userId:USER,sessionId:SESS,newMessage:{role:"user",parts:[{text}]},streaming:false};
   try{
@@ -189,6 +201,7 @@ async function send(text){
     }
     if(acc){memoText=acc;renderMemo()}
   }catch(e){addMsg("agent","Request failed: "+e.message)}
+  setRefreshing(false);
   busy=false;$("#send").disabled=false;
 }
 
