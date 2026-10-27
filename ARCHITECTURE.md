@@ -2,203 +2,233 @@
 **Corridor**: San Francisco — Central Market  
 **Track**: Micro-Producer & Supply Continuity  
 **Target Dataset**: `qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ`  
-**Framework**: Google Agent Development Kit (ADK) & BigQuery Property Graphs (GQL)
+**Framework**: Google Agent Development Kit (ADK), BigQuery Property Graphs (GQL), & MCP Toolbox for Databases
 
 ---
 
 ## 1. Executive Summary & Design Premise
 
-The **Local Economy Resilience Agent** acts as an AI Economic Development & Resilience Grant Officer. Rather than relying on simple subjective need or single-hop intuition, the agent identifies high-leverage micro-producers whose disruption would cascade through neighborhood storefronts.
+The **Local Economy Resilience Agent** functions as an AI Economic Development Officer allocating a fixed **$50,000 Micro-Grant Resilience Fund** across Central Market commercial entities.
 
 ### Core Axioms
 1. **"A graph makes consequence visible; it does not make the decision."**
 2. **Prioritization, not Prediction**: The agent prioritizes *"who to investigate first and why"*, explicitly accounting for unobserved contracts, cash reserves, and inventory buffers.
 3. **Guard Against Circularity**: Historical loan charge-offs serve strictly as an out-of-sample ground-truth validator; they are never fed into the topological grant sizing calculation.
 4. **Resilience Sweet Spot (5–25 Exposed)**: Mitigates giant hub bias (ubiquitous broadline vendors >25 connections that are readily substitutable) and trivial leaves (<5 connections).
+5. **Path-Intensity Weighting**: Paths are evaluated not merely by discrete hop counts, but by compound input intensities $\prod_{e \in p} \text{intensity}(e)$ and customer reliance.
 
 ---
 
-## 2. System Architecture Diagram
+## 2. System Architecture & Topology
 
 ```mermaid
 flowchart TD
-    subgraph User & Presentation Layer
-        User[Grant Officer / Economic Officer]
-        UI[Interactive Agent CLI / Chat Console]
+    subgraph Client & Presentation Layer
+        User[Grant Officer]
+        WebUI[ADK Web Console / Studio]
+        CLI[ADK Interactive Shell]
     end
 
     subgraph ADK Agent Layer [agent/agent.py]
         Agent[ADK Root Agent: resilience_grant_agent]
-        Gemini[Gemini 2.5 Flash]
-        Agent --> Gemini
+        Model[Gemini 2.5 Flash]
+        Agent --- Model
+    end
+
+    subgraph MCP Integration Layer
+        MCPToolbox[Google MCP Toolbox for Databases]
+        ToolsConfig[agent/tools.yaml]
+        MCPToolbox --- ToolsConfig
     end
 
     subgraph Tool & Decision Layer [agent/tools.py]
-        T1[discover_priority_candidates]
-        T2[query_cascade_exposure]
-        T3[evaluate_grant_recommendation]
-        T4[validate_sba_ground_truth]
-        T5[audit_equity_and_neighborhood_need]
-        T6[write_grant_decision]
+        T_Disc[discover_priority_candidates: GQL 5-25 Sweet Spot]
+        T_Casc[query_cascade_exposure: Bidirectional GQL + Reliance]
+        T_Eval[evaluate_grant_recommendation: Non-circular Topology Sizing]
+        T_Port[allocate_portfolio_grants: $50K Budget & Runner-ups]
+        T_SBA[validate_sba_ground_truth: Seasoned CA Credit Benchmarks]
+        T_Foot[assess_footfall_commuter_exposure: LEHD DrawsFootfall]
+        T_Equit[audit_corridor_equity_and_portfolio_bias: ACS Demographics]
+        T_Log[write_grant_decision: BigQuery Audit Trail]
     end
 
-    subgraph BigQuery Storage & Graph Engine [a4i_econ]
+    subgraph BigQuery Data Tier [a4i_econ]
         subgraph Property Graph: LocalEconomy
-            G_Node1[(Business Node: businesses)]
-            G_Node2[(Employer Node: employer_blocks)]
-            G_Edge1{{Supplies Edge: supplies}}
-            G_Edge2{{DrawsFootfall Edge: draws_footfall_from}}
-            G_Node1 -->|Supplies| G_Node1
-            G_Node2 -->|DrawsFootfall| G_Node1
+            G_Biz[(Business Node: businesses - 231)]
+            G_Emp[(Employer Node: employer_blocks - 122)]
+            G_Sup{{Supplies Edge: supplies - 989}}
+            G_Foot{{DrawsFootfall Edge: draws_footfall_from - 1024}}
+            G_Biz -->|Supplies: intensity, metres| G_Biz
+            G_Emp -->|DrawsFootfall: worker_share, metres| G_Biz
         end
 
         subgraph Relational Tables
-            T_SBA[(borrowed_from: SBA 7a/504)]
-            T_Demog[(tract_demographics: Census ACS)]
-            T_Audit[(grant_decisions: Log Table)]
+            T_Loans[(borrowed_from: SBA 7a/504)]
+            T_Tracts[(tract_demographics: Census ACS)]
+            T_Decs[(grant_decisions: Audit Table)]
         end
     end
 
-    User <--> UI
-    UI <--> Agent
-    Agent --> T1
-    Agent --> T2
-    Agent --> T3
-    Agent --> T4
-    Agent --> T5
-    Agent --> T6
+    User <--> WebUI
+    User <--> CLI
+    WebUI <--> Agent
+    CLI <--> Agent
+    Agent <--> MCPToolbox
+    Agent --> T_Disc
+    Agent --> T_Casc
+    Agent --> T_Eval
+    Agent --> T_Port
+    Agent --> T_SBA
+    Agent --> T_Foot
+    Agent --> T_Equit
+    Agent --> T_Log
 
-    T1 -->|GQL NEXT/FILTER| LocalEconomy
-    T2 -->|Bidirectional GQL| LocalEconomy
-    T4 -->|SQL Seasoned Cohorts| T_SBA
-    T5 -->|SQL Spatial Baseline| T_Demog
-    T6 -->|INSERT DDL| T_Audit
+    T_Disc -->|GQL NEXT/FILTER| LocalEconomy
+    T_Casc -->|Bidirectional GQL| LocalEconomy
+    T_Foot -->|SQL DrawsFootfall| LocalEconomy
+    T_SBA -->|SQL Seasoned Join| T_Loans
+    T_Equit -->|SQL Equity Benchmark| T_Tracts
+    T_Log -->|INSERT DDL| T_Decs
 ```
 
 ---
 
-## 3. Data Tier: Provenance & Reality Matrix
+## 3. Data Tier: Reality Matrix & Provenance Bounds
 
-| Table / Layer | Type / Graph Role | Ground Truth Status | Schema & Key Fields | Purpose & Caveats |
-|---|---|---|---|---|
-| **`businesses`** | Node (`Business`) | **100% Real** (SF Registered Open Data) | `business_id` (PK), `name`, `naics4`, `address`, `zip`, `latitude`, `longitude` | 231 filtered commercial nodes in Central Market across 65 NAICS4 codes. |
-| **`employer_blocks`** | Node (`Employer`) | **Real** job counts, approximate tract | `block_id` (PK), `tract`, `jobs` | 122 daytime employment blocks generating foot traffic demand. |
-| **`supplies`** | Edge (`Supplies`) | **Modeled** (BEA Input-Output coefficients + distance <=1200m) | `edge_id` (PK), `supplier_id` $\rightarrow$ `buyer_id`, `intensity`, `metres` | 989 directed edges. Capped at top 5 suppliers per buyer; drops 21 ubiquitous input sectors. |
-| **`draws_footfall_from`** | Edge (`DrawsFootfall`) | **Modeled** (Commuter worker allocation) | `edge_id` (PK), `block_id` $\rightarrow$ `business_id`, `worker_share`, `metres` | 1,024 edges allocating LEHD daytime workers to walkable consumer establishments. |
-| **`borrowed_from`** | Attribute (SQL Join) | **100% Real** (SBA FOIA 7(a)/504) | `business_id`, `bank_name`, `gross_approval`, `loan_status`, `charged_off` | **Validation Only**. 4 loans across 3 Central Market businesses (0 charged off). Non-circular validator. |
-| **`tract_demographics`** | Attribute (SQL Join) | **100% Real** (Census ACS 5-Year) | `geo_id` (PK), `poverty_rate`, `no_vehicle_rate` | Spatial equity audit comparing applicant tracts to corridor averages. |
+| Table / Element | Graph Role | Provenance & Ground Truth Status | Central Market Coverage & Reality Bounds |
+|---|---|---|---|
+| **`businesses`** | Node (`Business`) | **100% Real** (SF Registered Business Locations) | 231 businesses across 65 NAICS4 codes. |
+| **`employer_blocks`** | Node (`Employer`) | **Real** jobs totals (Census LEHD LODES) | 122 blocks within walkable distance of corridor storefronts. |
+| **`supplies`** | Edge (`Supplies`) | **Modeled** (BEA Input-Output matrix + distance filter) | 989 directed edges. Generator retains top 5 suppliers per buyer and drops 21 ubiquitous sectors. |
+| **`draws_footfall_from`**| Edge (`DrawsFootfall`)| **Modeled** (Allocated commuter jobs) | 1,024 directed edges linking daytime workers to shops. |
+| **`borrowed_from`** | Attribute (SQL Join) | **100% Real** (SBA FOIA 7(a)/504 records FY2020-present) | **Only 3 businesses matched (4 loans, ~1.3% coverage). Zero charge-offs in corridor.** |
+| **`tract_demographics`** | Attribute (SQL Join) | **100% Real** (Census ACS 5-Year Estimates) | 7 census tracts covering Central Market corridor. |
 
 ---
 
-## 4. Property Graph Specification (`LocalEconomy`)
+## 4. Graph Semantics & Traversal Directions
 
-Defined in `create_graph.sql` and registered under the BigQuery Enterprise reservation:
-
+In `create_graph.sql`, the directed edge `Supplies` is explicitly declared as:
 ```sql
-CREATE OR REPLACE PROPERTY GRAPH a4i_econ.LocalEconomy
-  NODE TABLES (
-    a4i_econ.businesses
-      KEY (business_id)
-      LABEL Business PROPERTIES (business_id, name, address, zip, naics4, latitude, longitude),
-    a4i_econ.employer_blocks
-      KEY (block_id)
-      LABEL Employer PROPERTIES (block_id, tract, jobs)
-  )
-  EDGE TABLES (
-    a4i_econ.supplies
-      KEY (edge_id)
-      SOURCE KEY (supplier_id) REFERENCES businesses (business_id)
-      DESTINATION KEY (buyer_id) REFERENCES businesses (business_id)
-      LABEL Supplies PROPERTIES (intensity, metres),
-    a4i_econ.draws_footfall_from
-      KEY (edge_id)
-      SOURCE KEY (block_id) REFERENCES employer_blocks (block_id)
-      DESTINATION KEY (business_id) REFERENCES businesses (business_id)
-      LABEL DrawsFootfall PROPERTIES (worker_share, metres)
-  );
+SOURCE KEY (supplier_id) REFERENCES businesses (business_id)
+DESTINATION KEY (buyer_id) REFERENCES businesses (business_id)
+```
+Therefore, all traversals strictly adhere to:
+$$\text{Supplier} \xrightarrow{\text{Supplies}} \text{Buyer / Customer}$$
+
+### 1. Forward Traversal: Direct Customers & Downstream Protection Cascade
+* **Direct Customers (1-hop)**:
+  $$(seed:Business) \xrightarrow{[:Supplies]} (customer:Business)$$
+* **Downstream Protection Cascade (1-to-2 hops)**:
+  $$(seed:Business) \xrightarrow{[:Supplies]\{1,2\}} (exposed:Business)$$
+* **Customer Reliance Metric**: For each direct customer $c$, computes what proportion of their input intensity originates from the seed:
+  $$\text{Reliance}(c) = \frac{\text{Intensity}(seed \to c)}{\sum_{s} \text{Intensity}(s \to c)}$$
+
+### 2. Backward Traversal: Upstream Dependencies & Single-Point-of-Failure
+* **Upstream Suppliers (1-hop)**:
+  $$(supplier:Business) \xrightarrow{[:Supplies]} (seed:Business)$$
+* **Single-Point-of-Failure Risk**: If `upstream_suppliers_count == 1`, the seed relies on a solitary corridor supplier for its key inputs, signaling critical operational supply vulnerability.
+
+---
+
+## 5. Tool Specifications & Status
+
+| Tool Name | Status | Function & Algorithmic Design |
+|---|---|---|
+| **`discover_priority_candidates`** | **Built** | GQL query using `NEXT ... FILTER` for the 5–25 downstream exposed band. Checks corridor NAICS peer density to tag **generator artifacts** (sole registrants accumulating edges). |
+| **`query_cascade_exposure`** | **Built** | Genuine bidirectional GQL traversal. Computes forward customer reliance, 2-hop exposed reach, upstream supplier dependencies, and continuous intensity score. |
+| **`evaluate_grant_recommendation`**| **Built** | Non-circular grant sizing ($0 to $12,500). Prioritizes 5–25 sweet spot; penalizes substitutable hubs (>25 connections). |
+| **`allocate_portfolio_grants`** | **Built** | Portfolio budget manager: distributes fixed $50,000 fund across candidates and designates runner-ups. |
+| **`validate_sba_ground_truth`** | **Built** | Out-of-sample validator using seasoned California loan cohorts ($N \ge 30$) with NAICS4 $\to$ NAICS2 rollup. Discloses Central Market 1.3% match limit. |
+| **`assess_footfall_commuter_exposure`**| **Built** | Traverses `DrawsFootfall` to quantify allocated daytime worker collapse risk. |
+| **`audit_corridor_equity_and_portfolio_bias`**| **Built** | Evaluates entire funded cohort against corridor ACS poverty averages and checks food-service vs producer industry skew. |
+| **`write_grant_decision`** | **Built** | Logs decisions with deterministic UUID4 `decision_id`, run IDs, and benchmark levels into BigQuery audit log. |
+
+---
+
+## 6. Ground-Truth Validation & Back-Test Protocol
+
+### Central Market Coverage Reality
+* In Central Market, **only 3 of 231 businesses (~1.3%)** have matched SBA loan records, and **zero loans were charged off**.
+* **Zero historical failures in the corridor means Central Market cannot serve as its own back-test ground truth.**
+
+### Cross-Corridor Back-Test Protocol
+To prove that our network fragility score accurately correlates with real historical business failure:
+1. The pipeline is executed against a historical test corridor with realized SBA charge-offs (e.g. *Mission District* or *North Beach*).
+2. Applicants are scored blindly using only graph topology and customer reliance.
+3. The fragility scores are back-tested against actual `charged_off = TRUE` labels to validate receiver operating characteristics (ROC) out of sample.
+
+---
+
+## 7. Grant Triage Memo Specification
+
+Every recommendation generated by the agent outputs an audit-ready **Grant Triage Memo** adhering to this standard:
+
+```markdown
+### Micro-Grant Triage Memo
+**Applicant**: [Business Name] (ID: [business_id], NAICS: [naics4] - [Industry Title])
+**Corridor**: San Francisco — Central Market | **Census Tract**: [tract_id]
+
+#### 1. Network Cascade & Protection Value
+- **Direct Local Customers**: [N] businesses (Average Reliance: [X]%)
+- **2-Hop Downstream Protected Venues**: [N] businesses
+- **Continuous Cascade Score**: [Score] (intensity-weighted)
+- **Top Downstream Buyers**: [Customer A] (weight: [W1]), [Customer B] (weight: [W2])
+- **Upstream Supply Risk**: [N] suppliers (Single-Point-of-Failure: [YES/NO])
+
+#### 2. Generator Artifact & Hub Assessment
+- **Corridor Peer Density**: [N] registrants in NAICS [naics4].
+- **Sole-Source Caveat**: [None / Generator Artifact: Sole local registrant; reach is upper bound].
+- **Hub Status**: [Optimal Resilience Band (5-25) / Hub Penalty (>25)].
+
+#### 3. Footfall & Commuter Exposure
+- **Daytime Workers Allocated**: [N] workers from [B] workplace blocks.
+- **Commuter Vulnerability**: [LOW / MODERATE / HIGH].
+
+#### 4. Ground-Truth SBA Validation (Out-of-Sample)
+- **Direct Loan Match in Corridor**: [None / Matched: Bank, Status, Charge-off indicator]
+- **Seasoned Industry Credit Benchmark**: [Rate]% (Level: [CA_NAICS4 / CA_NAICS2], N=[Sample Size])
+- **Circularity Note**: SBA credit rate is reported for macro context only and was NOT used to calculate this grant amount.
+
+#### 5. Funding Recommendation & Portfolio Position
+- **Recommendation**: [RECOMMENDED / RUNNER-UP / DECLINED]
+- **Allocated Sizing**: $[Amount] (of $50,000 Portfolio Fund)
+- **Portfolio Equity Impact**: Tract Poverty [X]% vs Corridor Baseline [Y]%.
+
+#### 6. Honest Model & Unobserved Variable Disclosure
+- Modeled BEA edges reflect industry propensity, not signed commercial supply contracts.
+- Unobserved variables: cash liquidity, inventory shelf life, and off-corridor supplier alternatives.
 ```
 
 ---
 
-## 5. Agent Tool Interfaces & Algorithmic Mechanics
+## 8. Deployment Architecture: ADK & MCP Toolbox
 
-### Tool 1: `discover_priority_candidates`
-* **GQL Mechanism**:
-  ```sql
-  GRAPH a4i_econ.LocalEconomy
-  MATCH (seed:Business)-[:Supplies]->{1,2}(exposed:Business)
-  RETURN seed.business_id AS business_id, seed.name AS business, seed.naics4 AS industry,
-         COUNT(DISTINCT exposed.business_id) AS exposed_2hop
-  NEXT
-  FILTER exposed_2hop >= @min_exposed AND exposed_2hop <= @max_exposed
-  RETURN business_id, business, industry, exposed_2hop
-  ORDER BY exposed_2hop DESC
-  ```
-* **Sole-Source Filter**: Cross-checks total registrants in the applicant's `naics4` across Central Market. If `count == 1`, tags the candidate with a sole-source caveat (buyers could potentially source outside the corridor).
-
-### Tool 2: `query_cascade_exposure`
-* **Bidirectional Traversal**:
-  * **Forward (Downstream Protection)**: `(seed)-[:Supplies]->{1,2}(exposed:Business)` identifies vulnerable downstream buyers.
-  * **Backward (Customer Reliance)**: `(buyer:Business)-[:Supplies]->(seed)` identifies direct customer concentration and demand risk.
-* **Path Serialization**: Employs `TO_JSON(p) AS path_json` with `ANY SHORTEST` paths to remain below visualizer payload limits.
-
-### Tool 3: `evaluate_grant_recommendation`
-* **Scoring Rules**:
-  * `exposed == 0`: $0 grant (Priority LOW).
-  * `5 <= exposed <= 25` (Sweet Spot): Recommends up to 25% of fund budget ($10,000–$12,500) (Priority HIGH).
-  * `exposed > 25` (Hub Trap): Recommends capped allocation ($7,500) (Priority MEDIUM) with hub substitutability warning.
-* **Non-Circularity**: Sizing is strictly determined by network topology and customer diversification, avoiding charge-off contamination.
-
-### Tool 4: `validate_sba_ground_truth`
-* **Direct Match**: Flags if an applicant has a ground-truth loan or active default in `borrowed_from`.
-* **Statewide Seasoned Benchmark Rollup**:
-  * Evaluates loans seasoned $\ge 2$ years to account for vintage lag.
-  * Minimum threshold: $N \ge 30$.
-  * Rollup sequence: `CA_NAICS4` $\rightarrow$ `CA_NAICS2_ROLLUP` if $N < 30$.
-* **Disclosures**: Explicitly tags metric as an *"SBA Industry Credit Benchmark"* rather than total business failure rate.
-
-### Tool 5: `audit_equity_and_neighborhood_need`
-* **Mechanism**: Compares applicant census tract poverty rate against the Central Market corridor mean.
-* **Audit Mandate**: Evaluates whether funding reaches high-need tracts or simply follows edge-generator density.
-
-### Tool 6: `write_grant_decision`
-* **Mechanism**: Creates `a4i_econ.grant_decisions` (if missing) and logs structured decision memos, timestamps, amounts, and audit rationale.
-
----
-
-## 6. End-to-End Triage & Audit Lifecycle
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Officer as Grant Officer
-    participant Agent as ADK Agent
-    participant Graph as BigQuery GQL
-    participant SQL as BigQuery SQL
-
-    Officer->>Agent: "Identify top Central Market micro-producers for our $50k fund"
-    Agent->>Graph: discover_priority_candidates(min=5, max=25, industry_prefix='31-33')
-    Graph-->>Agent: Candidates (e.g. Cumaica Coffee, Sour Flour) + sole-source flags
-    Officer->>Agent: "Evaluate Sour Flour"
-    Agent->>Graph: query_cascade_exposure(business_id)
-    Graph-->>Agent: Forward cascade (14 exposed) + Backward buyers (6 direct)
-    Agent->>SQL: validate_sba_ground_truth(business_id, naics4)
-    SQL-->>Agent: Direct match: None; Seasoned Benchmark: CA_NAICS4 (N=412, CO_Rate=4.2%)
-    Agent->>SQL: audit_equity_and_neighborhood_need(business_id)
-    SQL-->>Agent: Tract 012402 (Poverty: 24.8% vs Corridor Avg: 21.6% -> High Need)
-    Agent->>Agent: evaluate_grant_recommendation(exposed=14, buyers=6)
-    Agent->>Officer: Formats Audit-Ready Grant Memo with Model Disclosures
-    Officer->>Agent: "Approve recommendation"
-    Agent->>SQL: write_grant_decision(...)
-    SQL-->>Officer: Decision recorded with decision_id
+```
+[User Browser / CLI] 
+       │
+       ▼ (HTTP / SSE)
+[Google ADK Web Engine] (Cloud Run / Local Port 8080)
+       │
+       ├──► [Gemini 2.5 Flash] (Reasoning Engine)
+       │
+       ├──► [Native Python Graph Tools] (agent/tools.py)
+       │         │ (SQL/GQL)
+       │         ▼
+       │     [BigQuery Enterprise Engine] (qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ)
+       │
+       └──► [MCP Toolbox for Databases] (Cloud Run / Docker Container Port 5000)
+                 │ (agent/tools.yaml)
+                 ▼
+             [BigQuery Tables: grant_decisions, businesses, borrowed_from]
 ```
 
----
-
-## 7. Known Information Gaps & Audit Caveats
-
-Every memo and presentation deck generated under this architecture explicitly notes:
-1. **Unobserved Contracts**: BEA supply links model industry propensity, not signed commercial supplier contracts.
-2. **Buffer Inventory**: Operational shelf life and backup supplier access remain unobserved.
-3. **Cash Reserves**: Balance sheet liquidity is unobserved outside of SBA loan histories.
-4. **Coverage Bounds**: Ground-truth SBA loan matches exist for ~10% of corridor establishments; benchmark rates provide macro credit context.
+### Running the System Live
+1. **Interactive Shell**: `adk run agent`
+2. **Web GUI**: `adk web agent --port 8080`
+3. **MCP Server Integration**:
+   ```bash
+   docker run -p 5000:5000 -v $(pwd)/agent/tools.yaml:/tools.yaml gcr.io/mcp-toolbox/toolbox:latest
+   export MCP_TOOLBOX_URL="http://localhost:5000"
+   adk run agent
+   ```
