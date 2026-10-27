@@ -22,46 +22,79 @@ DATASET = os.environ.get("BIGQUERY_DATASET", "a4i_econ")
 GRAPH_NAME = f"{DATASET}.LocalEconomy"
 
 
+HUB_TIER_HIGH = 3.0    # total strong-link strength for HIGH priority (starting assumption)
+HUB_TIER_MEDIUM = 1.0  # total strong-link strength for MEDIUM priority (starting assumption)
+
+
+def _link_profile(business_id: str, project_id: Optional[str] = None) -> Dict[str, Any]:
+    """Counts ALL outgoing supply links (any strength) and the strongest one."""
+    p_id = project_id or PROJECT_ID
+    client = bigquery.Client(project=p_id)
+    sql = f"""
+    SELECT COUNT(*) AS links, MAX(intensity) AS strongest_link
+    FROM `{p_id}.{DATASET}.supplies`
+    WHERE supplier_id = @id
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("id", "STRING", business_id)]
+    )
+    row = list(client.query(sql, job_config=cfg).result())[0]
+    return {"links": int(row["links"] or 0), "strongest_link": float(row["strongest_link"] or 0.0)}
+
+
+def _peers_in_naics(naics4: str, project_id: Optional[str] = None) -> int:
+    """How many corridor businesses share this 4-digit industry (1 = sole source)."""
+    p_id = project_id or PROJECT_ID
+    client = bigquery.Client(project=p_id)
+    sql = f"""
+    SELECT COUNT(*) AS n
+    FROM `{p_id}.{DATASET}.businesses`
+    WHERE naics4 = @naics4
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("naics4", "STRING", naics4)]
+    )
+    return int(list(client.query(sql, job_config=cfg).result())[0]["n"] or 0)
+
+
 def query_cascade_exposure(
     business_id: str,
     max_depth: int = 2,
     project_id: Optional[str] = None,
+    min_intensity: float = 0.05,
 ) -> Dict[str, Any]:
-    """Queries BigQuery Property Graph using GQL in both directions with exact edge semantics.
+    """Traces a supplier's downstream cascade over STRONG supply links only.
 
-    CORRECTED EDGE DIRECTIONS:
-    1. Forward Traversal (Downstream Customers):
-       (seed:Business)-[:Supplies]->{1,max_depth}(customer:Business)
-       Traces downstream cascade consequence (who is exposed if this seed closes).
-       Direct customers are 1-hop; indirect customers are 2-hop.
-    2. Backward Traversal (Upstream Suppliers):
-       (supplier:Business)-[:Supplies]->(seed:Business)
-       Traces the seed's supply dependencies (identifies single-point-of-failure risks).
-    3. Customer Reliance:
-       For direct customers, computes what share of the customer's total inputs come from the seed.
+    Supply-link strengths are industry-level averages (every buyer in the same
+    industry gets the same weight), so counting links is mostly noise. Only links
+    with intensity >= min_intensity (default 0.05) are followed. Reach is counted as
+    DISTINCT businesses, the seed is excluded, and nothing is cut off by a LIMIT, so
+    counts are repeatable. A business NAME may be passed instead of an id.
 
     Args:
-        business_id: The unique identifier of the seed business.
-        max_depth: Depth of downstream graph traversal (1 to 2; default 2).
+        business_id: Business id (or name) of the seed supplier.
+        max_depth: Depth of downstream traversal, clamped to 1 or 2.
         project_id: Optional GCP project ID override.
+        min_intensity: Strength cutoff for a link to count (default 0.05).
 
-    Returns:
-        Structured dict containing:
-        - direct_customers: 1-hop buyers with intensity and customer reliance.
-        - downstream_cascade: 2-hop exposed businesses with cumulative path weights.
-        - upstream_suppliers: suppliers providing inputs to seed.
-        - cascade_multiplier_score: continuous intensity-weighted reach.
+    Returns a dict including strong_direct_buyers_count, total_strong_intensity,
+    direct_customers (strong direct buyers with intensity and reliance share),
+    total_downstream_exposed_count (distinct businesses reached over strong links
+    within max_depth), upstream suppliers, sample_paths and seed_address.
     """
     client = bigquery.Client(project=project_id or PROJECT_ID)
     p_id = project_id or PROJECT_ID
+    depth = max(1, min(int(max_depth), 2))
+    cutoff = float(min_intensity)  # validated float, safe to place in the query text
 
-    # Auto-resolve seed_id if the user or agent passed a name instead of an ID
+    # Auto-resolve: if a name was passed instead of an id, find the best match.
     resolved_id = business_id
-    id_check_sql = f"SELECT business_id, name FROM `{p_id}.{DATASET}.businesses` WHERE business_id = @b_id LIMIT 1"
-    check_cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("b_id", "STRING", business_id)])
+    id_check_sql = f"SELECT business_id FROM `{p_id}.{DATASET}.businesses` WHERE business_id = @b_id LIMIT 1"
+    check_cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("b_id", "STRING", business_id)]
+    )
     try:
         if not list(client.query(id_check_sql, job_config=check_cfg).result()):
-            # Not an exact ID; attempt name lookup
             name_match_sql = f"""
             SELECT business_id, name
             FROM `{p_id}.{DATASET}.businesses`
@@ -73,123 +106,142 @@ def query_cascade_exposure(
               name ASC
             LIMIT 1
             """
-            name_cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("name", "STRING", business_id)])
+            name_cfg = bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("name", "STRING", business_id)]
+            )
             m = list(client.query(name_match_sql, job_config=name_cfg).result())
             if m:
                 resolved_id = m[0]["business_id"]
     except Exception:
         pass
 
-    # 1. Forward Traversal: seed supplies customers
-    forward_gql = f"""
-    GRAPH {GRAPH_NAME}
-    MATCH p = (seed:Business WHERE seed.business_id = @seed_id)
-              -[:Supplies]->{{1,{max_depth}}}(customer:Business)
-    RETURN seed.business_id AS seed_id,
-           seed.name AS seed_name,
-           seed.naics4 AS seed_industry,
-           customer.business_id AS customer_id,
-           customer.name AS customer_name,
-           customer.naics4 AS customer_industry,
-           TO_JSON(p) AS path_json
-    LIMIT 150
+    seed_sql = f"""
+    SELECT name, naics4, address
+    FROM `{p_id}.{DATASET}.businesses`
+    WHERE business_id = @seed_id
     """
 
-    # 2. Backward Traversal: upstream suppliers that supply seed
+    # Forward: distinct businesses reached over strong links (no LIMIT, no duplicates).
+    forward_gql = f"""
+    GRAPH {GRAPH_NAME}
+    MATCH (seed:Business WHERE seed.business_id = @seed_id)
+          -[e:Supplies WHERE e.intensity >= {cutoff}]->{{1,{depth}}}(customer:Business)
+    WHERE seed.business_id <> customer.business_id
+    RETURN customer.business_id AS customer_id,
+           customer.name AS customer_name,
+           customer.naics4 AS customer_industry,
+           COUNT(*) AS path_count
+    ORDER BY customer_id
+    """
+
+    # A few example paths for the memo (one shortest path per reached business).
+    paths_gql = f"""
+    GRAPH {GRAPH_NAME}
+    MATCH p = ANY SHORTEST (seed:Business WHERE seed.business_id = @seed_id)
+              -[e:Supplies WHERE e.intensity >= {cutoff}]->{{1,{depth}}}(customer:Business)
+    RETURN TO_JSON(p) AS path_json
+    LIMIT 10
+    """
+
+    # Backward: who supplies the seed (single-point-of-failure check).
     backward_gql = f"""
     GRAPH {GRAPH_NAME}
     MATCH (supplier:Business)-[:Supplies]->(seed:Business WHERE seed.business_id = @seed_id)
     RETURN supplier.business_id AS supplier_id,
            supplier.name AS supplier_name,
            supplier.naics4 AS supplier_industry
-    LIMIT 50
+    ORDER BY supplier_id
     """
 
-    # 3. SQL query for customer reliance and edge intensities from supplies table
+    # Strong direct buyers and each buyer's reliance share (against ALL its inputs).
     reliance_query = f"""
     WITH seed_outbound AS (
-      SELECT
-        buyer_id,
-        intensity AS seed_intensity,
-        metres
+      SELECT buyer_id, intensity AS seed_intensity, metres
       FROM `{p_id}.{DATASET}.supplies`
-      WHERE supplier_id = @seed_id
+      WHERE supplier_id = @seed_id AND intensity >= {cutoff}
     ),
     buyer_totals AS (
-      SELECT
-        buyer_id,
-        SUM(intensity) AS total_input_intensity,
-        COUNT(DISTINCT supplier_id) AS supplier_count
+      SELECT buyer_id,
+             SUM(intensity) AS total_input_intensity,
+             COUNT(DISTINCT supplier_id) AS supplier_count
       FROM `{p_id}.{DATASET}.supplies`
       GROUP BY buyer_id
     )
-    SELECT
-      o.buyer_id,
-      b.name AS buyer_name,
-      b.naics4 AS buyer_industry,
-      ROUND(o.seed_intensity, 4) AS seed_intensity,
-      ROUND(o.metres) AS metres,
-      ROUND(t.total_input_intensity, 4) AS total_input_intensity,
-      t.supplier_count,
-      ROUND(SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity), 4) AS customer_reliance_share
+    SELECT o.buyer_id, b.name AS buyer_name, b.naics4 AS buyer_industry,
+           ROUND(o.seed_intensity, 4) AS seed_intensity, ROUND(o.metres) AS metres,
+           ROUND(t.total_input_intensity, 4) AS total_input_intensity, t.supplier_count,
+           ROUND(SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity), 4) AS customer_reliance_share
     FROM seed_outbound o
     JOIN buyer_totals t ON o.buyer_id = t.buyer_id
     JOIN `{p_id}.{DATASET}.businesses` b ON o.buyer_id = b.business_id
+    ORDER BY o.seed_intensity DESC, o.buyer_id
     """
 
-    job_config = bigquery.QueryJobConfig(
+    cfg = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("seed_id", "STRING", resolved_id)]
     )
 
     try:
-        # Run forward GQL
-        fwd_rows = [dict(r) for r in client.query(forward_gql, job_config=job_config).result()]
-        # Run backward GQL (upstream suppliers)
-        bwd_rows = [dict(r) for r in client.query(backward_gql, job_config=job_config).result()]
-        # Run reliance calculation
-        reliance_rows = [dict(r) for r in client.query(reliance_query, job_config=job_config).result()]
-        for r in reliance_rows:
-            if r.get("customer_reliance_share") is not None:
-                r["customer_reliance_share"] = round(float(r["customer_reliance_share"]), 4)
-            if r.get("seed_intensity") is not None:
-                r["seed_intensity"] = round(float(r["seed_intensity"]), 4)
-            if r.get("total_input_intensity") is not None:
-                r["total_input_intensity"] = round(float(r["total_input_intensity"]), 4)
+        seed_rows = [dict(r) for r in client.query(seed_sql, job_config=cfg).result()]
+        if not seed_rows:
+            return {
+                "seed_id": business_id,
+                "status": "failed",
+                "error": "business not found by id or name in businesses table",
+            }
+        seed = seed_rows[0]
+
+        fwd_rows = [dict(r) for r in client.query(forward_gql, job_config=cfg).result()]
+        path_rows = [dict(r) for r in client.query(paths_gql, job_config=cfg).result()]
+        bwd_rows = [dict(r) for r in client.query(backward_gql, job_config=cfg).result()]
+        reliance_rows = [dict(r) for r in client.query(reliance_query, job_config=cfg).result()]
+        for r in reliance_rows:  # keep the agent lane's rounding
+            for key in ("customer_reliance_share", "seed_intensity", "total_input_intensity"):
+                if r.get(key) is not None:
+                    r[key] = round(float(r[key]), 4)
             if r.get("metres") is not None:
                 r["metres"] = round(float(r["metres"]))
 
+        direct_ids = {r["buyer_id"] for r in reliance_rows}
+        all_ids = {r["customer_id"] for r in fwd_rows}
+        indirect_ids = all_ids - direct_ids
 
-        seed_name = fwd_rows[0]["seed_name"] if fwd_rows else "Unknown"
-        seed_naics4 = fwd_rows[0]["seed_industry"] if fwd_rows else ""
-
-        # Distinguish 1-hop direct customers vs 2-hop indirect
-        direct_customer_ids = {r["buyer_id"] for r in reliance_rows}
-        all_exposed_ids = {r["customer_id"] for r in fwd_rows}
-        indirect_exposed_ids = all_exposed_ids - direct_customer_ids
-
-        # Compute continuous intensity-weighted cascade multiplier
-        direct_reliance_sum = sum(float(r.get("customer_reliance_share") or 0.0) for r in reliance_rows)
-        multiplier_score = round(direct_reliance_sum * 10.0 + len(indirect_exposed_ids) * 0.5, 2)
+        total_strong_intensity = round(
+            sum(float(r.get("seed_intensity") or 0.0) for r in reliance_rows), 4
+        )
+        direct_reliance_sum = sum(
+            float(r.get("customer_reliance_share") or 0.0) for r in reliance_rows
+        )
+        multiplier_score = round(direct_reliance_sum * 10.0 + len(indirect_ids) * 0.5, 2)
 
         return {
             "seed_id": resolved_id,
-            "seed_name": seed_name,
-            "seed_naics4": seed_naics4,
-            "max_depth": max_depth,
-            "total_downstream_exposed_count": len(all_exposed_ids),
-            "direct_customers_count": len(direct_customer_ids),
-            "indirect_customers_count": len(indirect_exposed_ids),
+            "seed_name": seed["name"],
+            "seed_naics4": seed["naics4"],
+            "seed_address": seed["address"],
+            "max_depth": depth,
+            "min_intensity": cutoff,
+            "strong_direct_buyers_count": len(direct_ids),
+            "total_strong_intensity": total_strong_intensity,
+            "total_downstream_exposed_count": len(all_ids),
+            "direct_customers_count": len(direct_ids),
+            "indirect_customers_count": len(indirect_ids),
             "cascade_multiplier_score": multiplier_score,
             "direct_customers": reliance_rows,
             "upstream_suppliers_count": len(bwd_rows),
             "upstream_suppliers": bwd_rows,
             "upstream_single_point_of_failure": len(bwd_rows) == 1,
-            "sample_paths": [r["path_json"] for r in fwd_rows[:10]],
+            "sample_paths": [r["path_json"] for r in path_rows],
+            "evidence_note": (
+                "Link strengths are industry averages from federal data, not measured "
+                "business-to-business relationships. Only links with intensity >= "
+                f"{cutoff} are counted. Some buyers may be duplicate registrations."
+            ),
             "status": "success",
         }
     except Exception as e:
         return {
-            "seed_id": business_id,
+            "seed_id": resolved_id,
             "error": str(e),
             "status": "failed",
             "hint": "Ensure BigQuery Enterprise reservation is active and LocalEconomy graph is built.",
@@ -198,64 +250,121 @@ def query_cascade_exposure(
 
 def evaluate_grant_recommendation(
     seed_business_id: str,
-    total_downstream_exposed_count: int,
+    total_downstream_exposed_count: int = 0,
     direct_customers_count: int = 0,
     cascade_multiplier_score: float = 0.0,
     upstream_suppliers_count: int = 0,
     total_fund_budget: float = 50000.0,
     requested_amount: float = 10000.0,
     corridor_peers_in_naics: int = 1,
+    min_intensity: float = 0.05,
 ) -> Dict[str, Any]:
-    """Evaluates an individual micro-producer grant based on network topology and path intensity.
+    """Evaluates a supplier grant from LINK STRENGTH, recomputed from the graph.
 
-    NON-CIRCULARITY & RUBRIC RULES:
-    1. Guard against circularity: SBA charge-off history is NOT an input to this score.
-    2. Sweet spot (5-25 exposed): High protection leverage with localized ripple effect.
-    3. Hub trap (>25 exposed): Ubiquitous broadline vendors are penalized/capped due to substitutability.
-    4. Generator artifact: Sole-source registrants (corridor_peers == 1) receive explicit caveats.
-    5. Upstream single-point-of-failure: Flagged if the seed has only 1 local supplier.
+    Only seed_business_id (an id or a name) is needed. The other evidence arguments
+    are kept for compatibility and are IGNORED: the numbers are recomputed here from
+    the graph so the memo can cite them.
+
+    Rules (topology only; SBA charge-offs are never an input, to avoid circularity):
+    1. Rank by total strength of STRONG supply links (intensity >= min_intensity),
+       not by how many businesses a supplier touches.
+    2. Weak-link hub: touches many businesses but has no strong link. Not funded.
+       Reach is not dependence.
+    3. Tiers by total strong-link strength: HIGH >= 3.0, MEDIUM >= 1.0, else LOW.
+       The thresholds are starting assumptions; show how the answer moves if they change.
+    4. Sole-source suppliers (only business in their industry here) get an explicit
+       upper-bound caveat: buyers could source outside the corridor.
     """
-    is_hub = total_downstream_exposed_count > 25
-    is_sole_source = (corridor_peers_in_naics == 1)
+    cascade = query_cascade_exposure(seed_business_id, min_intensity=min_intensity)
+    if cascade.get("status") != "success":
+        return {
+            "business_id": seed_business_id,
+            "status": "failed",
+            "priority": "UNKNOWN",
+            "recommended_amount": 0.0,
+            "error": cascade.get("error", "cascade query failed"),
+        }
+    resolved_id = cascade.get("seed_id", seed_business_id)
+    try:
+        profile = _link_profile(resolved_id)
+        peers = _peers_in_naics(cascade.get("seed_naics4") or "")
+    except Exception as e:
+        return {
+            "business_id": resolved_id,
+            "status": "failed",
+            "priority": "UNKNOWN",
+            "recommended_amount": 0.0,
+            "error": str(e),
+        }
 
-    if total_downstream_exposed_count == 0:
-        recommended_amount = 0.0
-        priority = "LOW"
-        rationale = "Zero downstream businesses identified in supply chain cascade. Minimal systemic multiplier."
-    elif is_hub:
-        recommended_amount = min(requested_amount, 5000.0)
-        priority = "MEDIUM"
+    strong_buyers = int(cascade["strong_direct_buyers_count"])
+    reach = int(cascade["total_downstream_exposed_count"])
+    strength = float(cascade["total_strong_intensity"])
+    score = float(cascade["cascade_multiplier_score"])
+    upstream = int(cascade.get("upstream_suppliers_count") or 0)
+    is_sole_source = peers == 1
+    is_weak_hub = strong_buyers == 0 and profile["links"] >= 10
+
+    if strong_buyers == 0 and is_weak_hub:
+        recommended_amount, priority = 0.0, "LOW"
         rationale = (
-            f"Candidate reaches {total_downstream_exposed_count} businesses (>25 hub threshold). "
-            "Ubiquitous supplier is likely substitutable across the broader city. "
-            "Capped to $5,000 to preserve fund liquidity for specialized micro-producers."
+            f"Weak-link hub: touches {profile['links']} businesses, but its strongest link is "
+            f"{profile['strongest_link']:.3f}, below the {min_intensity} cutoff, so it has no strong "
+            "dependents. Reach is not dependence. Not recommended."
         )
-    elif 5 <= total_downstream_exposed_count <= 25:
-        recommended_amount = min(requested_amount, total_fund_budget * 0.25)
-        priority = "HIGH"
-        spof_note = " CAUTION: applicant has single upstream supplier." if upstream_suppliers_count == 1 else ""
-        sole_note = " (Note: Sole registrant in corridor NAICS - reach is upper bound)." if is_sole_source else ""
+    elif strong_buyers == 0:
+        recommended_amount, priority = 0.0, "LOW"
+        rationale = f"No strong downstream dependents at the {min_intensity} cutoff. Not recommended."
+    elif strength >= HUB_TIER_HIGH:
+        recommended_amount, priority = min(requested_amount, total_fund_budget * 0.25), "HIGH"
         rationale = (
-            f"Prime resilience target: protects {total_downstream_exposed_count} downstream venues "
-            f"({direct_customers_count} direct buyers) with cascade intensity score {cascade_multiplier_score:.1f}. "
-            f"Closure creates localized, non-substitutable disruption{spof_note}{sole_note}"
+            f"Protects {strong_buyers} strong direct buyers (total link strength {strength:.2f}); "
+            f"{reach} businesses reached within 2 hops over links >= {min_intensity}."
+        )
+    elif strength >= HUB_TIER_MEDIUM:
+        recommended_amount, priority = min(requested_amount, 5000.0), "MEDIUM"
+        rationale = (
+            f"Protects {strong_buyers} strong direct buyers (total link strength {strength:.2f}); "
+            f"{reach} businesses reached within 2 hops over links >= {min_intensity}."
         )
     else:
-        recommended_amount = min(requested_amount, 3500.0)
-        priority = "LOW"
+        recommended_amount, priority = min(requested_amount, 3500.0), "LOW"
         rationale = (
-            f"Isolated producer: only {total_downstream_exposed_count} downstream businesses protected. "
+            f"Only {strong_buyers} strong direct buyers (total link strength {strength:.2f}). "
             "Low systemic multiplier on grant capital."
         )
 
+    caveats = [
+        "Link strengths are industry averages from federal data; which business buys from "
+        "which is modeled, not measured.",
+        "Some buyers may be duplicate registrations of the same business.",
+        "A grant changes a probability of survival, not an outcome. Tier thresholds "
+        f"({HUB_TIER_HIGH}/{HUB_TIER_MEDIUM}) and amounts are starting assumptions.",
+    ]
+    if is_sole_source:
+        caveats.append(
+            "Only business in its industry in the corridor: it collects every edge for that "
+            "input, and buyers could source outside the corridor, so reach is an upper bound."
+        )
+    if upstream == 1:
+        caveats.append("CAUTION: this business has a single upstream supplier.")
+
     return {
-        "business_id": seed_business_id,
+        "business_id": resolved_id,
+        "business_name": cascade.get("seed_name"),
         "priority": priority,
         "recommended_amount": recommended_amount,
-        "cascade_multiplier_score": cascade_multiplier_score,
-        "is_hub_penalized": is_hub,
+        "cascade_multiplier_score": score,
+        "is_hub_penalized": is_weak_hub,
         "is_sole_source_artifact": is_sole_source,
+        "strong_direct_buyers": strong_buyers,
+        "total_strong_intensity": strength,
+        "reach_within_2_hops": reach,
+        "total_links_any_strength": profile["links"],
+        "strongest_link": profile["strongest_link"],
+        "min_intensity": min_intensity,
         "rationale": rationale,
+        "caveats": caveats,
         "status": "success",
     }
 
