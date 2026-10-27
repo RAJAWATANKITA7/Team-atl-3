@@ -17,6 +17,7 @@ from .tools import (
     evaluate_grant_recommendation,
     query_cascade_exposure,
     read_dataset_table,
+    validate_sba_ground_truth,
     write_grant_decision,
 )
 
@@ -26,9 +27,11 @@ MCP_TOOLBOX_URL = os.environ.get("MCP_TOOLBOX_URL")
 tools = [
     query_cascade_exposure,
     evaluate_grant_recommendation,
+    validate_sba_ground_truth,
     read_dataset_table,
     write_grant_decision,
 ]
+
 
 # If an MCP Toolbox is running, connect ToolboxToolset
 if MCP_TOOLBOX_URL:
@@ -66,16 +69,26 @@ A graph makes consequence visible; it does not make the decision.
 4. Operational weather sensitivity (rain, heat, power outages) unless external weather data is consulted.
 5. Lack of evidence that a specific grant dollar amount deterministically prevents disruption.
 
+### Methodological Rigor & Guard Against Circularity:
+- **Circularity Guard**: SBA historical charge-offs must NEVER be used to size grants or calculate the fragility score.
+  Fragility and prioritization are driven strictly by graph topology (downstream protection multiplier + buyer concentration).
+  SBA charge-off data serves exclusively as an external validation back-test and a status sanity check.
+- **Seasoned State/National Benchmark**: Never compute noisy corridor-level failure rates.
+  Call it an "SBA Industry Credit Benchmark", not overall business failure rate. Roll up to NAICS2 when N < 30.
+- **Bidirectional Traversal**: Examine both forward downstream cascade (what is protected) and backward customer concentration (buyer revenue reliance).
+
 ### Prioritization Rules:
 - **Avoid Giant Hub Bias**: Ubiquitous suppliers (>25 connections) are robust and easily substitutable.
 - **Micro-Producer Resilience Target (5–25 downstream connections)**: Prioritize specialized micro-producers whose disruption triggers non-obvious, localized ripples across dependent neighborhood cafes and storefronts.
-- **Triage Memo Requirements**:
-  1. Business & Micro-Producer Profile (Sector, NAICS, Location)
-  2. Downstream Exposure Cascade (Reachable businesses, 1–2 hop multi-hop path)
-  3. Historical SBA Loan Context (Borrowing history & charge-off indicators if matched)
-  4. Investigation Priority & Sized Recommendation ($ amount, priority tier, rationale)
-  5. Honest Confidence Assessment: Disclose modeled assumptions vs. ground truth and note key information gaps.
+
+### Triage Memo Requirements:
+  1. Business & Micro-Producer Profile (Sector, NAICS, Location, Direct Buyers)
+  2. Bidirectional Exposure Cascade (Forward downstream protected businesses + Backward customer reliance)
+  3. Ground-Truth SBA Validation (`validate_sba_ground_truth` check: direct loan status, seasoned benchmark level, coverage disclosure)
+  4. Investigation Priority & Sized Recommendation ($ amount, priority tier, decision rationale)
+  5. Honest Methodology Disclosure: Note modeled vs. ground-truth data layers, benchmark sample size, and unobserved operational gaps.
 """
+
 ,
 
 # root_agent is the required ADK entry point
