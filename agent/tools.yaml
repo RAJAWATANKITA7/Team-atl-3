@@ -1,0 +1,71 @@
+sources:
+  resilience_db:
+    kind: bigquery
+    project: qwiklabs-gcp-03-14e29f4c8c1f
+
+tools:
+  - name: read_table_data
+    source: resilience_db
+    kind: bigquery-sql
+    description: "Read rows from a specified table in the a4i_econ dataset with an optional limit and filter."
+    statement: |
+      SELECT *
+      FROM `qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ.@table_name`
+      LIMIT @row_limit
+    parameters:
+      - name: table_name
+        type: string
+        description: "Target table name: businesses, employer_blocks, supplies, draws_footfall_from, borrowed_from, or tract_demographics."
+      - name: row_limit
+        type: integer
+        description: "Maximum number of rows to return (e.g. 50)."
+
+  - name: execute_resilience_query
+    source: resilience_db
+    kind: bigquery-sql
+    description: "Execute a read query against tables in the qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ dataset."
+    statement: |
+      @sql_query
+    parameters:
+      - name: sql_query
+        type: string
+        description: "Standard SQL or GQL query targeting qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ tables."
+
+  - name: get_business_by_id
+    source: resilience_db
+    kind: bigquery-sql
+    description: "Fetch full business profile and attributes for a given business ID."
+    statement: |
+      SELECT *
+      FROM `qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ.businesses`
+      WHERE business_id = @business_id
+    parameters:
+      - name: business_id
+        type: string
+        description: "The business ID to look up."
+
+  - name: record_grant_decision
+    source: resilience_db
+    kind: bigquery-sql
+    description: "Log an agent grant recommendation or allocation into the grant_decisions table."
+    statement: |
+      INSERT INTO `qwiklabs-gcp-03-14e29f4c8c1f.a4i_econ.grant_decisions`
+        (decision_id, business_id, recommended_amount, priority, rationale, decided_at)
+      VALUES
+        (@decision_id, @business_id, @recommended_amount, @priority, @rationale, CURRENT_TIMESTAMP())
+    parameters:
+      - name: decision_id
+        type: string
+        description: "Unique UUID or identifier for this decision log."
+      - name: business_id
+        type: string
+        description: "The ID of the business receiving the recommendation."
+      - name: recommended_amount
+        type: number
+        description: "The recommended grant amount in USD."
+      - name: priority
+        type: string
+        description: "Priority tier: HIGH, MODERATE, MEDIUM, or LOW."
+      - name: rationale
+        type: string
+        description: "Explanation justifying the grant allocation based on downstream network cascade impact."
