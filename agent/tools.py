@@ -26,138 +26,153 @@ def query_cascade_exposure(
     business_id: str,
     max_depth: int = 2,
     project_id: Optional[str] = None,
+    min_intensity: float = 0.05,
 ) -> Dict[str, Any]:
-    """Queries BigQuery Property Graph using GQL in both directions with exact edge semantics.
+    """Traces a supplier's downstream cascade over STRONG supply links only.
 
-    CORRECTED EDGE DIRECTIONS:
-    1. Forward Traversal (Downstream Customers):
-       (seed:Business)-[:Supplies]->{1,max_depth}(customer:Business)
-       Traces downstream cascade consequence (who is exposed if this seed closes).
-       Direct customers are 1-hop; indirect customers are 2-hop.
-    2. Backward Traversal (Upstream Suppliers):
-       (supplier:Business)-[:Supplies]->(seed:Business)
-       Traces the seed's supply dependencies (identifies single-point-of-failure risks).
-    3. Customer Reliance:
-       For direct customers, computes what share of the customer's total inputs come from the seed.
+    Supply-link strengths are industry-level averages (every buyer in the same
+    industry gets the same weight), so counting links is mostly noise. Only links
+    with intensity >= min_intensity (default 0.05) are followed. Reach is counted
+    as DISTINCT businesses, the seed is excluded, and nothing is truncated by a
+    LIMIT, so counts are repeatable.
 
     Args:
         business_id: The unique identifier of the seed business.
-        max_depth: Depth of downstream graph traversal (1 to 2; default 2).
+        max_depth: Depth of downstream traversal, clamped to 1 or 2.
         project_id: Optional GCP project ID override.
+        min_intensity: Strength cutoff for a link to count (default 0.05).
 
-    Returns:
-        Structured dict containing:
-        - direct_customers: 1-hop buyers with intensity and customer reliance.
-        - downstream_cascade: 2-hop exposed businesses with cumulative path weights.
-        - upstream_suppliers: suppliers providing inputs to seed.
-        - cascade_multiplier_score: continuous intensity-weighted reach.
+    Returns a dict with (old keys kept, new keys added):
+        strong_direct_buyers_count, total_strong_intensity, direct_customers
+        (strong direct buyers with intensity and customer reliance share),
+        total_downstream_exposed_count (distinct businesses reached by strong
+        links within max_depth), upstream suppliers, sample_paths, seed_address.
     """
     client = bigquery.Client(project=project_id or PROJECT_ID)
     p_id = project_id or PROJECT_ID
+    depth = max(1, min(int(max_depth), 2))
+    cutoff = float(min_intensity)  # validated float, safe to place in the query text
 
-    # 1. Forward Traversal: seed supplies customers
-    forward_gql = f"""
-    GRAPH {GRAPH_NAME}
-    MATCH p = (seed:Business WHERE seed.business_id = @seed_id)
-              -[:Supplies]->{{1,{max_depth}}}(customer:Business)
-    RETURN seed.business_id AS seed_id,
-           seed.name AS seed_name,
-           seed.naics4 AS seed_industry,
-           customer.business_id AS customer_id,
-           customer.name AS customer_name,
-           customer.naics4 AS customer_industry,
-           TO_JSON(p) AS path_json
-    LIMIT 150
+    seed_sql = f"""
+    SELECT name, naics4, address
+    FROM `{p_id}.{DATASET}.businesses`
+    WHERE business_id = @seed_id
     """
 
-    # 2. Backward Traversal: upstream suppliers that supply seed
+    # Forward: distinct businesses reached over strong links (no LIMIT, no duplicates).
+    forward_gql = f"""
+    GRAPH {GRAPH_NAME}
+    MATCH (seed:Business WHERE seed.business_id = @seed_id)
+          -[e:Supplies WHERE e.intensity >= {cutoff}]->{{1,{depth}}}(customer:Business)
+    WHERE seed.business_id <> customer.business_id
+    RETURN customer.business_id AS customer_id,
+           customer.name AS customer_name,
+           customer.naics4 AS customer_industry,
+           COUNT(*) AS path_count
+    ORDER BY customer_id
+    """
+
+    # A few example paths for the memo (one shortest path per reached business).
+    paths_gql = f"""
+    GRAPH {GRAPH_NAME}
+    MATCH p = ANY SHORTEST (seed:Business WHERE seed.business_id = @seed_id)
+              -[e:Supplies WHERE e.intensity >= {cutoff}]->{{1,{depth}}}(customer:Business)
+    RETURN TO_JSON(p) AS path_json
+    LIMIT 10
+    """
+
+    # Backward: who supplies the seed (single-point-of-failure check).
     backward_gql = f"""
     GRAPH {GRAPH_NAME}
     MATCH (supplier:Business)-[:Supplies]->(seed:Business WHERE seed.business_id = @seed_id)
     RETURN supplier.business_id AS supplier_id,
            supplier.name AS supplier_name,
            supplier.naics4 AS supplier_industry
-    LIMIT 50
+    ORDER BY supplier_id
     """
 
-    # 3. SQL query for customer reliance and edge intensities from supplies table
+    # Strong direct buyers and each buyer's reliance share (against ALL its inputs).
     reliance_query = f"""
     WITH seed_outbound AS (
-      SELECT
-        buyer_id,
-        intensity AS seed_intensity,
-        metres
+      SELECT buyer_id, intensity AS seed_intensity, metres
       FROM `{p_id}.{DATASET}.supplies`
-      WHERE supplier_id = @seed_id
+      WHERE supplier_id = @seed_id AND intensity >= {cutoff}
     ),
     buyer_totals AS (
-      SELECT
-        buyer_id,
-        SUM(intensity) AS total_input_intensity,
-        COUNT(DISTINCT supplier_id) AS supplier_count
+      SELECT buyer_id,
+             SUM(intensity) AS total_input_intensity,
+             COUNT(DISTINCT supplier_id) AS supplier_count
       FROM `{p_id}.{DATASET}.supplies`
       GROUP BY buyer_id
     )
-    SELECT
-      o.buyer_id,
-      b.name AS buyer_name,
-      b.naics4 AS buyer_industry,
-      ROUND(o.seed_intensity, 4) AS seed_intensity,
-      o.metres,
-      ROUND(t.total_input_intensity, 4) AS total_input_intensity,
-      t.supplier_count,
-      ROUND(SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity), 4) AS customer_reliance_share
+    SELECT o.buyer_id, b.name AS buyer_name, b.naics4 AS buyer_industry,
+           ROUND(o.seed_intensity, 4) AS seed_intensity, o.metres,
+           ROUND(t.total_input_intensity, 4) AS total_input_intensity, t.supplier_count,
+           ROUND(SAFE_DIVIDE(o.seed_intensity, t.total_input_intensity), 4) AS customer_reliance_share
     FROM seed_outbound o
     JOIN buyer_totals t ON o.buyer_id = t.buyer_id
     JOIN `{p_id}.{DATASET}.businesses` b ON o.buyer_id = b.business_id
+    ORDER BY o.seed_intensity DESC, o.buyer_id
     """
 
-    job_config = bigquery.QueryJobConfig(
+    cfg = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("seed_id", "STRING", business_id)]
     )
 
     try:
-        # Run forward GQL
-        fwd_rows = [dict(r) for r in client.query(forward_gql, job_config=job_config).result()]
-        # Run backward GQL (upstream suppliers)
-        bwd_rows = [dict(r) for r in client.query(backward_gql, job_config=job_config).result()]
-        # Run reliance calculation
-        reliance_rows = [dict(r) for r in client.query(reliance_query, job_config=job_config).result()]
-        for r in reliance_rows:
-            if r.get("customer_reliance_share") is not None:
-                r["customer_reliance_share"] = round(float(r["customer_reliance_share"]), 4)
-            if r.get("seed_intensity") is not None:
-                r["seed_intensity"] = round(float(r["seed_intensity"]), 4)
-            if r.get("total_input_intensity") is not None:
-                r["total_input_intensity"] = round(float(r["total_input_intensity"]), 4)
+        seed_rows = [dict(r) for r in client.query(seed_sql, job_config=cfg).result()]
+        if not seed_rows:
+            return {
+                "seed_id": business_id,
+                "status": "failed",
+                "error": "business_id not found in businesses table",
+            }
+        seed = seed_rows[0]
 
+        fwd_rows = [dict(r) for r in client.query(forward_gql, job_config=cfg).result()]
+        path_rows = [dict(r) for r in client.query(paths_gql, job_config=cfg).result()]
+        bwd_rows = [dict(r) for r in client.query(backward_gql, job_config=cfg).result()]
+        reliance_rows = [dict(r) for r in client.query(reliance_query, job_config=cfg).result()]
+        for r in reliance_rows:  # keep the agent lane's 4-decimal rounding
+            for key in ("customer_reliance_share", "seed_intensity", "total_input_intensity"):
+                if r.get(key) is not None:
+                    r[key] = round(float(r[key]), 4)
 
-        seed_name = fwd_rows[0]["seed_name"] if fwd_rows else "Unknown"
-        seed_naics4 = fwd_rows[0]["seed_industry"] if fwd_rows else ""
+        direct_ids = {r["buyer_id"] for r in reliance_rows}
+        all_ids = {r["customer_id"] for r in fwd_rows}
+        indirect_ids = all_ids - direct_ids
 
-        # Distinguish 1-hop direct customers vs 2-hop indirect
-        direct_customer_ids = {r["buyer_id"] for r in reliance_rows}
-        all_exposed_ids = {r["customer_id"] for r in fwd_rows}
-        indirect_exposed_ids = all_exposed_ids - direct_customer_ids
-
-        # Compute continuous intensity-weighted cascade multiplier
-        direct_reliance_sum = sum(float(r.get("customer_reliance_share") or 0.0) for r in reliance_rows)
-        multiplier_score = round(direct_reliance_sum * 10.0 + len(indirect_exposed_ids) * 0.5, 2)
+        total_strong_intensity = round(
+            sum(float(r.get("seed_intensity") or 0.0) for r in reliance_rows), 4
+        )
+        direct_reliance_sum = sum(
+            float(r.get("customer_reliance_share") or 0.0) for r in reliance_rows
+        )
+        multiplier_score = round(direct_reliance_sum * 10.0 + len(indirect_ids) * 0.5, 2)
 
         return {
             "seed_id": business_id,
-            "seed_name": seed_name,
-            "seed_naics4": seed_naics4,
-            "max_depth": max_depth,
-            "total_downstream_exposed_count": len(all_exposed_ids),
-            "direct_customers_count": len(direct_customer_ids),
-            "indirect_customers_count": len(indirect_exposed_ids),
+            "seed_name": seed["name"],
+            "seed_naics4": seed["naics4"],
+            "seed_address": seed["address"],
+            "max_depth": depth,
+            "min_intensity": cutoff,
+            "strong_direct_buyers_count": len(direct_ids),
+            "total_strong_intensity": total_strong_intensity,
+            "total_downstream_exposed_count": len(all_ids),
+            "direct_customers_count": len(direct_ids),
+            "indirect_customers_count": len(indirect_ids),
             "cascade_multiplier_score": multiplier_score,
             "direct_customers": reliance_rows,
             "upstream_suppliers_count": len(bwd_rows),
             "upstream_suppliers": bwd_rows,
             "upstream_single_point_of_failure": len(bwd_rows) == 1,
-            "sample_paths": [r["path_json"] for r in fwd_rows[:10]],
+            "sample_paths": [r["path_json"] for r in path_rows],
+            "evidence_note": (
+                "Link strengths are industry averages from federal data, not measured "
+                "business-to-business relationships. Only links with intensity >= "
+                f"{cutoff} are counted. Some buyers may be duplicate registrations."
+            ),
             "status": "success",
         }
     except Exception as e:
@@ -167,6 +182,32 @@ def query_cascade_exposure(
             "status": "failed",
             "hint": "Ensure BigQuery Enterprise reservation is active and LocalEconomy graph is built.",
         }
+
+
+def find_business_by_name(name: str, project_id: Optional[str] = None) -> Dict[str, Any]:
+    """Finds Central Market businesses by (partial) name and returns their business_id.
+
+    Call this FIRST whenever the user gives a business name, then pass the returned
+    business_id to the other tools. If several match, show the matches and ask which
+    one is meant (duplicate registrations exist). Never ask the user for a business_id.
+    """
+    p_id = project_id or PROJECT_ID
+    client = bigquery.Client(project=p_id)
+    sql = f"""
+    SELECT business_id, name, naics4, address
+    FROM `{p_id}.{DATASET}.businesses`
+    WHERE LOWER(name) LIKE CONCAT('%', LOWER(@name), '%')
+    ORDER BY name
+    LIMIT 10
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("name", "STRING", name)]
+    )
+    try:
+        rows = [dict(r) for r in client.query(sql, job_config=cfg).result()]
+        return {"matches": rows, "count": len(rows), "status": "success"}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
 
 
 def evaluate_grant_recommendation(
